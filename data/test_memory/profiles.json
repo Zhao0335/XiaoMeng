@@ -1,0 +1,74 @@
+{
+  "test_user": {
+    "user_id": "test_user",
+    "baseline_emotion": {
+      "joy": 0.0,
+      "sadness": 0.0,
+      "anger": 0.0,
+      "fear": 0.0,
+      "surprise": 0.0,
+      "disgust": 0.0,
+      "trust": 0.0,
+      "anticipation": 0.0
+    },
+    "emotion_history": [
+      [
+        "2026-02-20T18:41:46.896980",
+        {
+          "joy": 0.0,
+          "sadness": 0.0,
+          "anger": 0.0,
+          "fear": 0.0,
+          "surprise": 0.0,
+          "disgust": 0.0,
+          "trust": 0.0,
+          "anticipation": 0.0
+        }
+      ],
+      [
+        "2026-02-20T18:44:41.696451",
+        {
+          "joy": 0.0,
+          "sadness": 0.0,
+          "anger": 0.0,
+          "fear": 0.0,
+          "surprise": 0.0,
+          "disgust": 0.0,
+          "trust": 0.0,
+          "anticipation": 0.0
+        }
+      ],
+      [
+        "2026-02-20T18:45:53.545449",
+        {
+          "joy": 0.0,
+          "sadness": 0.0,
+          "anger": 0.0,
+          "fear": 0.0,
+          "surprise": 0.0,
+          "disgust": 0.0,
+          "trust": 0.0,
+          "anticipation": 0.0
+        }
+      ],
+      [
+        "2026-02-20T18:46:18.011615",
+        {
+          "joy": 0.0,
+          "sadness": 0.0,
+          "anger": 0.0,
+          "fear": 0.0,
+          "surprise": 0.0,
+          "disgust": 0.0,
+          "trust": 0.0,
+          "anticipation": 0.0
+        }
+      ]
+    ],
+    "preferred_topics": [],
+    "avoided_topics": [],
+    "communication_style": {},
+    "emotional_triggers": {},
+    "last_updated": "2026-02-20T18:46:18.011615"
+  }
+}

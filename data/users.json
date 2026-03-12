@@ -1,0 +1,29 @@
+{
+  "test_owner": {
+    "user_id": "test_owner",
+    "level": "owner",
+    "identities": [],
+    "nickname": null,
+    "whitelist_since": null,
+    "preferences": {},
+    "metadata": {}
+  },
+  "test_user": {
+    "user_id": "test_user",
+    "level": "owner",
+    "identities": [
+      {
+        "source": "cli",
+        "channel_user_id": "test_cli",
+        "display_name": "测试用户"
+      }
+    ],
+    "nickname": null,
+    "whitelist_since": null,
+    "preferences": {
+      "language": "zh-CN",
+      "timezone": "Asia/Shanghai"
+    },
+    "metadata": {}
+  }
+}

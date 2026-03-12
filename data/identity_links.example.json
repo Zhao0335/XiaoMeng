@@ -1,0 +1,43 @@
+{
+    "identity_links": {
+        "alice": [
+            "qq:12345678",
+            "wechat:wxid_alice_abc",
+            "telegram:123456789"
+        ],
+        "bob": [
+            "qq:87654321",
+            "discord:987654321"
+        ],
+        "owner": [
+            "qq:11111111",
+            "wechat:wxid_owner",
+            "http:admin"
+        ]
+    },
+    "identity_profiles": {
+        "alice": {
+            "display_name": "Alice Wang",
+            "level": "normal",
+            "group_id": "friends"
+        },
+        "bob": {
+            "display_name": "Bob Zhang",
+            "level": "normal",
+            "group_id": "colleagues"
+        },
+        "owner": {
+            "display_name": "主人",
+            "level": "owner",
+            "group_id": null
+        }
+    },
+    "dm_scope": "per-identity",
+    "group_activation": "mention",
+    "_comment": {
+        "dm_scope": "私信会话模式: per-identity(跨平台统一) 或 per-platform(各平台独立)",
+        "group_activation": "群组激活方式: mention(被@时响应) 或 always(总是响应)",
+        "identity_links": "平台身份映射: 规范身份ID -> [平台:用户ID, ...]",
+        "platforms": "qq, wechat, telegram, discord, websocket, http, cli, webchat, plugin"
+    }
+}

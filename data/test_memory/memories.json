@@ -1,0 +1,110 @@
+{
+  "fb3033ba25a391cd": {
+    "id": "fb3033ba25a391cd",
+    "content": "这是一条测试记忆",
+    "memory_type": "episodic",
+    "timestamp": "2026-02-20T18:41:46.896980",
+    "emotion": {
+      "joy": 0.0,
+      "sadness": 0.0,
+      "anger": 0.0,
+      "fear": 0.0,
+      "surprise": 0.0,
+      "disgust": 0.0,
+      "trust": 0.0,
+      "anticipation": 0.0
+    },
+    "importance": 0.3,
+    "access_count": 0,
+    "last_accessed": null,
+    "decay_rate": 0.1,
+    "entities": [
+      "测试",
+      "记忆"
+    ],
+    "relations": [],
+    "source_modality": "text",
+    "metadata": {}
+  },
+  "568b0497b972bfad": {
+    "id": "568b0497b972bfad",
+    "content": "这是一条测试记忆",
+    "memory_type": "episodic",
+    "timestamp": "2026-02-20T18:44:41.696451",
+    "emotion": {
+      "joy": 0.0,
+      "sadness": 0.0,
+      "anger": 0.0,
+      "fear": 0.0,
+      "surprise": 0.0,
+      "disgust": 0.0,
+      "trust": 0.0,
+      "anticipation": 0.0
+    },
+    "importance": 0.3,
+    "access_count": 0,
+    "last_accessed": null,
+    "decay_rate": 0.1,
+    "entities": [
+      "测试",
+      "记忆"
+    ],
+    "relations": [],
+    "source_modality": "text",
+    "metadata": {}
+  },
+  "712eb71f16b7cf1d": {
+    "id": "712eb71f16b7cf1d",
+    "content": "这是一条测试记忆",
+    "memory_type": "episodic",
+    "timestamp": "2026-02-20T18:45:53.545449",
+    "emotion": {
+      "joy": 0.0,
+      "sadness": 0.0,
+      "anger": 0.0,
+      "fear": 0.0,
+      "surprise": 0.0,
+      "disgust": 0.0,
+      "trust": 0.0,
+      "anticipation": 0.0
+    },
+    "importance": 0.3,
+    "access_count": 0,
+    "last_accessed": null,
+    "decay_rate": 0.1,
+    "entities": [
+      "测试",
+      "记忆"
+    ],
+    "relations": [],
+    "source_modality": "text",
+    "metadata": {}
+  },
+  "8e5785c8b0573bbc": {
+    "id": "8e5785c8b0573bbc",
+    "content": "这是一条测试记忆",
+    "memory_type": "episodic",
+    "timestamp": "2026-02-20T18:46:18.011615",
+    "emotion": {
+      "joy": 0.0,
+      "sadness": 0.0,
+      "anger": 0.0,
+      "fear": 0.0,
+      "surprise": 0.0,
+      "disgust": 0.0,
+      "trust": 0.0,
+      "anticipation": 0.0
+    },
+    "importance": 0.3,
+    "access_count": 0,
+    "last_accessed": null,
+    "decay_rate": 0.1,
+    "entities": [
+      "测试",
+      "记忆"
+    ],
+    "relations": [],
+    "source_modality": "text",
+    "metadata": {}
+  }
+}

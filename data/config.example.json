@@ -1,0 +1,169 @@
+{
+  "_comment": "XiaoMengCore 配置文件 - 详细注释版",
+  "owner": {
+    "_comment": "主人配置 - 拥有最高权限的用户",
+    "user_id": "your_user_id",
+    "identities": [
+      {
+        "_comment": "身份标识 - 可以配置多个渠道的身份",
+        "source": "cli",
+        "channel_user_id": "your_cli_username",
+        "display_name": "主人"
+      },
+      {
+        "source": "web",
+        "channel_user_id": "your_web_username",
+        "display_name": "主人"
+      }
+    ]
+  },
+  "whitelist": {
+    "_comment": "白名单配置 - 控制谁可以使用小萌",
+    "enabled": true,
+    "_enabled_comment": "是否启用白名单，false 则所有人都能使用",
+    "pairing_enabled": false,
+    "_pairing_comment": "是否允许通过配对码添加新用户",
+    "pairing_code": "",
+    "_pairing_code_comment": "配对码，用户输入后可加入白名单",
+    "users": [
+      {
+        "_comment": "白名单用户示例",
+        "user_id": "friend_001",
+        "display_name": "朋友A"
+      }
+    ]
+  },
+  "user_groups": {
+    "_comment": "用户分组 - 可以为不同用户组设置不同权限",
+    "friends": {
+      "group_id": "friends",
+      "name": "朋友组",
+      "user_level": "whitelist",
+      "identities": []
+    }
+  },
+  "llm": {
+    "_comment": "默认 LLM 配置 - 用于基本对话",
+    "provider": "ollama",
+    "_provider_comment": "提供商：ollama, openai, anthropic, custom",
+    "api_key": "ollama",
+    "_api_key_comment": "API密钥，本地模型可填任意值",
+    "base_url": "http://localhost:11434/v1",
+    "_base_url_comment": "API地址，Ollama 默认 11434 端口",
+    "model": "qwen2.5:7b",
+    "_model_comment": "模型名称，需要与 Ollama 中 pull 的模型一致",
+    "max_tokens": 4096,
+    "_max_tokens_comment": "最大输出长度",
+    "temperature": 0.7,
+    "_temperature_comment": "创造性程度，0-1，越高越随机"
+  },
+  "models": {
+    "_comment": "多层模型配置 - 让小萌更聪明地使用不同模型",
+    "enabled": true,
+    "basic_layer": {
+      "_comment": "Basic层 - 快速决策和简单任务",
+      "_purpose": "用于判断用户意图、简单问答、路由决策",
+      "models": [
+        {
+          "model_id": "qwen-basic",
+          "layer": "basic",
+          "role": "chat",
+          "endpoint": "http://localhost:11434/v1",
+          "model_name": "qwen2.5:7b",
+          "api_key": null,
+          "max_tokens": 2048,
+          "temperature": 0.7,
+          "timeout": 30,
+          "enabled": true,
+          "priority": 1
+        }
+      ]
+    },
+    "brain_layer": {
+      "_comment": "Brain层 - 复杂推理和任务处理",
+      "_purpose": "用于复杂推理、代码生成、论文分析",
+      "models": [
+        {
+          "model_id": "qwen-brain",
+          "layer": "brain",
+          "role": "reasoning",
+          "endpoint": "http://localhost:11434/v1",
+          "model_name": "qwen2.5:14b",
+          "api_key": null,
+          "max_tokens": 8192,
+          "temperature": 0.5,
+          "timeout": 120,
+          "enabled": true,
+          "priority": 1
+        }
+      ]
+    },
+    "special_layer": {
+      "_comment": "Special层 - 专用任务模型",
+      "_purpose": "用于视觉、代码、数学等专门任务",
+      "models": [
+        {
+          "model_id": "code-special",
+          "layer": "special",
+          "role": "code",
+          "endpoint": "http://localhost:11434/v1",
+          "model_name": "codellama:7b",
+          "api_key": null,
+          "max_tokens": 4096,
+          "temperature": 0.3,
+          "timeout": 60,
+          "enabled": true,
+          "priority": 1
+        }
+      ]
+    }
+  },
+  "memory": {
+    "_comment": "记忆系统配置",
+    "enabled": true,
+    "storage_type": "hybrid",
+    "_storage_type_comment": "存储类型：memory(内存), markdown(文件), hybrid(混合), vector(向量)",
+    "short_term_limit": 20,
+    "_short_term_comment": "短期记忆条数限制",
+    "long_term_enabled": true,
+    "_long_term_comment": "是否启用长期记忆",
+    "graph_enabled": false,
+    "_graph_comment": "是否启用图数据库（需要 Neo4j）",
+    "graphiti_uri": "bolt://localhost:7687",
+    "vector_enabled": false,
+    "_vector_comment": "是否启用向量数据库（需要 Chroma）",
+    "chroma_persist_dir": "./data/chroma",
+    "markdown_enabled": true,
+    "_markdown_comment": "是否启用 Markdown 记忆文件",
+    "markdown_dir": "./data/memory"
+  },
+  "gateway": {
+    "_comment": "网关配置 - 控制小萌从哪些渠道接收消息",
+    "enabled_channels": [
+      "cli",
+      "web"
+    ],
+    "_channels_comment": "可用渠道：cli(命令行), web(网页), qq, wechat",
+    "http_port": 8080,
+    "_http_port_comment": "Web API 端口"
+  },
+  "session": {
+    "_comment": "会话配置",
+    "session_timeout": 3600,
+    "_timeout_comment": "会话超时时间（秒）",
+    "max_history_length": 50,
+    "_history_comment": "最大历史消息数",
+    "auto_save": true
+  },
+  "version_control": {
+    "_comment": "版本控制配置",
+    "enabled": true,
+    "_enabled_comment": "是否启用版本控制",
+    "enable_git": true,
+    "_git_comment": "是否使用 Git 进行版本控制",
+    "require_confirmation": false,
+    "_confirmation_comment": "修改人设文件是否需要确认"
+  },
+  "data_dir": "./data",
+  "_data_dir_comment": "数据存储目录"
+}
