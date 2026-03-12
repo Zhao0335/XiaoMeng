@@ -1,0 +1,153 @@
+# XiaoMengCore 配置文件
+# 请根据你的实际情况修改
+
+# 主人配置
+owner:
+  user_id: "3797723137"  # 你的QQ号
+  identities:
+    - source: "qq"
+      channel_user_id: "3797723137"
+      display_name: "主人QQ"
+    - source: "desktop"
+      channel_user_id: "desktop_owner"
+      display_name: "桌宠端"
+    - source: "web"
+      channel_user_id: "web_owner"
+      display_name: "网页端"
+  preferences:
+    language: "zh-CN"
+    timezone: "Asia/Shanghai"
+
+# 白名单配置
+whitelist:
+  enabled: true
+  pairing_code: "xiaomeng2024"  # 配对码，用户输入后可加入白名单
+  pairing_enabled: true
+  users: []  # 白名单用户列表，会自动填充
+
+# 用户组配置 - 定义哪些渠道身份共享会话
+# 这允许你将不同平台的身份分组，共享同一个会话上下文
+user_groups:
+  # 示例：将朋友的QQ和桌面端身份合并
+  # friend_group:
+  #   name: "朋友A"
+  #   identities:
+  #     - source: "qq"
+  #       channel_user_id: "12345678"
+  #       display_name: "朋友QQ"
+  #     - source: "desktop"
+  #       channel_user_id: "friend_desktop"
+  #       display_name: "朋友桌宠"
+  #   user_level: "whitelist"
+  #   preferences: {}
+
+# LLM 配置
+llm:
+  provider: "deepseek"
+  api_key: "your_api_key_here"  # 请填入你的 API Key
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  max_tokens: 4096
+  temperature: 0.7
+  system_prompt: ""  # 留空，会从人设文件加载
+
+# 多模型配置 (三层架构)
+# Basic层: 快速响应，处理简单任务
+# Brain层: 深度思考，处理复杂任务
+# Special层: 专家模型，处理特定任务（代码、视觉等）
+models:
+  enabled: true
+  
+  # Basic层 - 快速响应
+  basic_layer:
+    - model_id: "basic_local"
+      layer: "basic"
+      role: "chat"
+      endpoint: "http://localhost:11434/v1"
+      model_name: "qwen2.5:7b"
+      max_tokens: 2048
+      temperature: 0.7
+      timeout: 30
+      enabled: true
+      priority: 1
+  
+  # Brain层 - 深度思考
+  brain_layer:
+    - model_id: "brain_cloud"
+      layer: "brain"
+      role: "chat"
+      endpoint: "https://api.deepseek.com/v1"
+      model_name: "deepseek-chat"
+      api_key: "your_api_key_here"
+      max_tokens: 4096
+      temperature: 0.7
+      timeout: 60
+      enabled: true
+      priority: 1
+  
+  # Special层 - 专家模型
+  special_layer:
+    - model_id: "code_expert"
+      layer: "special"
+      role: "code"
+      endpoint: "https://api.deepseek.com/v1"
+      model_name: "deepseek-coder"
+      api_key: "your_api_key_here"
+      max_tokens: 4096
+      temperature: 0.5
+      timeout: 120
+      enabled: true
+      priority: 1
+    # - model_id: "vision_expert"
+    #   layer: "special"
+    #   role: "vision"
+    #   endpoint: "https://api.openai.com/v1"
+    #   model_name: "gpt-4-vision-preview"
+    #   api_key: "your_openai_key"
+    #   max_tokens: 2048
+    #   enabled: true
+
+# 记忆系统配置
+memory:
+  enabled: true
+  storage_type: "hybrid"  # hybrid = markdown + vector
+  short_term_limit: 20
+  long_term_enabled: true
+  
+  # 图谱记忆 (需要 Neo4j)
+  graph_enabled: false
+  graphiti_uri: "bolt://localhost:7687"
+  
+  # 向量记忆 (ChromaDB)
+  vector_enabled: true
+  chroma_persist_dir: "./data/chroma"
+  
+  # Markdown 记忆 (兼容 OpenClaw)
+  markdown_enabled: true
+  markdown_dir: "./data/memory"
+
+# 网关配置
+gateway:
+  enabled_channels:
+    - "cli"      # 命令行接口
+    - "http"     # HTTP API
+    - "websocket" # WebSocket (桌宠)
+    # - "qq"      # QQ 渠道 (需要 NapCat)
+  
+  qq_websocket_url: "ws://127.0.0.1:3001"
+  
+  http_port: 8080
+  http_host: "0.0.0.0"
+  
+  websocket_port: 18789
+  websocket_host: "127.0.0.1"
+
+# 会话配置
+session:
+  session_timeout: 3600  # 会话超时时间(秒)
+  max_history_length: 50  # 最大历史消息数
+  auto_save: true
+  save_interval: 60  # 自动保存间隔(秒)
+
+# 数据目录
+data_dir: "./data"

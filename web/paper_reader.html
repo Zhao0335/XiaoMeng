@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>论文阅读器 - XiaoMengCore</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        .paper-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .analysis-content h2 { font-size: 1.25rem; font-weight: bold; margin: 1rem 0 0.5rem; color: #1e40af; }
+        .analysis-content h3 { font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.25rem; color: #374151; }
+        .chat-message { max-width: 80%; }
+        .typing { animation: blink 1s infinite; }
+        @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="flex h-screen">
+        <!-- 左侧论文列表 -->
+        <div class="w-80 bg-white border-r flex flex-col shadow-lg">
+            <div class="p-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
+                <h1 class="text-xl font-bold">📚 论文阅读器</h1>
+                <p class="text-sm opacity-80">AI 辅助论文分析</p>
+            </div>
+            
+            <!-- 上传区域 -->
+            <div class="p-4 border-b">
+                <label class="block w-full p-4 border-2 border-dashed border-gray-300 rounded-lg text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50 transition">
+                    <input type="file" accept=".pdf" class="hidden" onchange="uploadPaper(this)">
+                    <div class="text-gray-500">
+                        <svg class="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                        </svg>
+                        <span>上传 PDF 论文</span>
+                    </div>
+                </label>
+            </div>
+            
+            <!-- 论文列表 -->
+            <div class="flex-1 overflow-y-auto p-4">
+                <h2 class="text-sm font-semibold text-gray-500 mb-3">论文列表</h2>
+                <div id="paperList" class="space-y-2"></div>
+            </div>
+            
+            <!-- 底部链接 -->
+            <div class="p-4 border-t text-center">
+                <a href="/" class="text-sm text-indigo-600 hover:text-indigo-800">← 返回管理面板</a>
+            </div>
+        </div>
+        
+        <!-- 右侧内容区 -->
+        <div class="flex-1 flex flex-col">
+            <!-- 欢迎页 -->
+            <div id="welcomePage" class="flex-1 flex items-center justify-center">
+                <div class="text-center text-gray-400">
+                    <svg class="w-32 h-32 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    <p class="text-xl">上传 PDF 论文开始阅读</p>
+                    <p class="mt-2">支持 AI 智能分析和对话问答</p>
+                </div>
+            </div>
+            
+            <!-- 论文内容 -->
+            <div id="paperContent" class="flex-1 hidden flex flex-col">
+                <!-- 论文信息 -->
+                <div class="p-6 border-b bg-white shadow">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h1 id="paperTitle" class="text-2xl font-bold text-gray-800"></h1>
+                            <p id="paperMeta" class="text-sm text-gray-500 mt-1"></p>
+                        </div>
+                        <button onclick="deletePaper()" class="text-red-500 hover:text-red-700 p-2 rounded-lg hover:bg-red-50 transition">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 标签页 -->
+                <div class="border-b bg-white">
+                    <div class="flex">
+                        <button onclick="showTab('structure')" class="tab-btn px-6 py-3 text-indigo-600 border-b-2 border-indigo-600 font-medium" data-tab="structure">📄 结构</button>
+                        <button onclick="showTab('analysis')" class="tab-btn px-6 py-3 text-gray-500 hover:text-gray-700" data-tab="analysis">🤖 AI分析</button>
+                        <button onclick="showTab('chat')" class="tab-btn px-6 py-3 text-gray-500 hover:text-gray-700" data-tab="chat">💬 问答</button>
+                        <button onclick="showTab('fulltext')" class="tab-btn px-6 py-3 text-gray-500 hover:text-gray-700" data-tab="fulltext">📝 全文</button>
+                    </div>
+                </div>
+                
+                <!-- 内容区域 -->
+                <div class="flex-1 overflow-y-auto p-6 bg-gray-50">
+                    <!-- 结构视图 -->
+                    <div id="structureTab" class="tab-content space-y-4 fade-in"></div>
+                    
+                    <!-- AI 分析 -->
+                    <div id="analysisTab" class="tab-content hidden fade-in">
+                        <div class="flex gap-2 mb-4">
+                            <button onclick="analyze('summary')" class="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition shadow">📝 生成摘要</button>
+                            <button onclick="analyze('contribution')" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition shadow">💡 分析贡献</button>
+                            <button onclick="analyze('method')" class="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition shadow">🔧 方法详解</button>
+                        </div>
+                        <div id="analysisResult" class="analysis-content bg-white rounded-xl p-6 shadow-lg"></div>
+                    </div>
+                    
+                    <!-- 对话问答 -->
+                    <div id="chatTab" class="tab-content hidden h-full flex flex-col fade-in">
+                        <div id="chatMessages" class="flex-1 overflow-y-auto space-y-4 mb-4 p-4 bg-white rounded-xl shadow"></div>
+                        <div class="flex gap-2">
+                            <input id="chatInput" type="text" placeholder="输入关于论文的问题..." 
+                                class="flex-1 px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                onkeypress="if(event.key==='Enter')chat()">
+                            <button onclick="chat()" class="px-6 py-3 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 transition shadow">发送</button>
+                        </div>
+                    </div>
+                    
+                    <!-- 全文 -->
+                    <div id="fulltextTab" class="tab-content hidden fade-in">
+                        <div id="fulltextContent" class="bg-white rounded-xl p-6 shadow-lg whitespace-pre-wrap text-sm leading-relaxed max-h-[70vh] overflow-y-auto"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/paper';
+        let currentPaper = null;
+        let chatHistory = [];
+        
+        async function loadPapers() {
+            try {
+                const res = await fetch(`${API_BASE}/list`);
+                const data = await res.json();
+                const list = document.getElementById('paperList');
+                
+                if (!data.papers.length) {
+                    list.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">暂无论文</div>';
+                    return;
+                }
+                
+                list.innerHTML = data.papers.map(p => `
+                    <div class="paper-card p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-indigo-50 transition ${currentPaper?.paper_id === p.paper_id ? 'ring-2 ring-indigo-500 bg-indigo-50' : ''}"
+                         onclick="loadPaper('${p.paper_id}')">
+                        <div class="font-medium text-gray-800 truncate">${p.title || p.filename}</div>
+                        <div class="text-xs text-gray-500 mt-1">${p.page_count}页 · ${formatSize(p.file_size)}</div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                document.getElementById('paperList').innerHTML = '<div class="text-red-400 text-sm text-center py-8">加载失败</div>';
+            }
+        }
+        
+        async function uploadPaper(input) {
+            const file = input.files[0];
+            if (!file) return;
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
+                const data = await res.json();
+                
+                if (data.success) {
+                    loadPapers();
+                    loadPaper(data.paper.paper_id);
+                } else {
+                    alert('上传失败: ' + data.error);
+                }
+            } catch (e) {
+                alert('上传失败: ' + e.message);
+            }
+            input.value = '';
+        }
+        
+        async function loadPaper(id) {
+            try {
+                const res = await fetch(`${API_BASE}/detail/${id}`);
+                currentPaper = await res.json();
+                chatHistory = [];
+                
+                document.getElementById('welcomePage').classList.add('hidden');
+                document.getElementById('paperContent').classList.remove('hidden');
+                
+                document.getElementById('paperTitle').textContent = currentPaper.title || currentPaper.filename;
+                document.getElementById('paperMeta').textContent = `${currentPaper.page_count}页 · ${formatSize(currentPaper.file_size)} · ${currentPaper.upload_time}`;
+                
+                const s = currentPaper.structure || {};
+                document.getElementById('structureTab').innerHTML = `
+                    ${s.abstract ? `<div class="bg-blue-50 rounded-xl p-4"><h3 class="font-semibold text-blue-800 mb-2">📝 摘要</h3><p class="text-gray-700">${escapeHtml(s.abstract)}</p></div>` : ''}
+                    ${s.introduction ? `<div class="bg-green-50 rounded-xl p-4"><h3 class="font-semibold text-green-800 mb-2">📖 引言</h3><p class="text-gray-700 text-sm">${escapeHtml(s.introduction)}</p></div>` : ''}
+                    ${s.methods ? `<div class="bg-purple-50 rounded-xl p-4"><h3 class="font-semibold text-purple-800 mb-2">🔧 方法</h3><p class="text-gray-700 text-sm">${escapeHtml(s.methods)}</p></div>` : ''}
+                    ${s.results ? `<div class="bg-yellow-50 rounded-xl p-4"><h3 class="font-semibold text-yellow-800 mb-2">📊 结果</h3><p class="text-gray-700 text-sm">${escapeHtml(s.results)}</p></div>` : ''}
+                    ${s.conclusion ? `<div class="bg-red-50 rounded-xl p-4"><h3 class="font-semibold text-red-800 mb-2">✅ 结论</h3><p class="text-gray-700 text-sm">${escapeHtml(s.conclusion)}</p></div>` : ''}
+                `;
+                
+                document.getElementById('fulltextContent').textContent = currentPaper.full_text || '无法提取文本';
+                document.getElementById('analysisResult').innerHTML = '<p class="text-gray-400">点击上方按钮开始分析</p>';
+                document.getElementById('chatMessages').innerHTML = '';
+                
+                showTab('structure');
+                loadPapers();
+            } catch (e) {
+                alert('加载失败: ' + e.message);
+            }
+        }
+        
+        async function deletePaper() {
+            if (!currentPaper || !confirm('确定删除这篇论文？')) return;
+            
+            await fetch(`${API_BASE}/delete/${currentPaper.paper_id}`, { method: 'DELETE' });
+            currentPaper = null;
+            document.getElementById('welcomePage').classList.remove('hidden');
+            document.getElementById('paperContent').classList.add('hidden');
+            loadPapers();
+        }
+        
+        function showTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                b.classList.remove('text-indigo-600', 'border-b-2', 'border-indigo-600', 'font-medium');
+                b.classList.add('text-gray-500');
+            });
+            document.querySelector(`[data-tab="${tab}"]`).classList.add('text-indigo-600', 'border-b-2', 'border-indigo-600', 'font-medium');
+            document.querySelector(`[data-tab="${tab}"]`).classList.remove('text-gray-500');
+            
+            document.querySelectorAll('.tab-content').forEach(e => e.classList.add('hidden'));
+            document.getElementById(`${tab}Tab`).classList.remove('hidden');
+        }
+        
+        async function analyze(type) {
+            if (!currentPaper) return;
+            document.getElementById('analysisResult').innerHTML = '<p class="text-indigo-500"><span class="typing">AI 分析中...</span></p>';
+            
+            try {
+                const res = await fetch(`${API_BASE}/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paper_id: currentPaper.paper_id, analysis_type: type })
+                });
+                
+                const data = await res.json();
+                document.getElementById('analysisResult').innerHTML = data.success 
+                    ? marked.parse(data.result) 
+                    : `<p class="text-red-500">${data.result || data.error}</p>`;
+            } catch (e) {
+                document.getElementById('analysisResult').innerHTML = `<p class="text-red-500">分析失败: ${e.message}</p>`;
+            }
+        }
+        
+        async function chat() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if (!msg || !currentPaper) return;
+            
+            const div = document.getElementById('chatMessages');
+            div.innerHTML += `<div class="flex justify-end"><div class="chat-message bg-indigo-500 text-white rounded-xl px-4 py-2">${escapeHtml(msg)}</div></div>`;
+            input.value = '';
+            
+            div.innerHTML += `<div id="typing" class="flex justify-start"><div class="chat-message bg-gray-200 rounded-xl px-4 py-2"><span class="typing">思考中...</span></div></div>`;
+            div.scrollTop = div.scrollHeight;
+            
+            try {
+                const res = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paper_id: currentPaper.paper_id, message: msg, history: chatHistory })
+                });
+                
+                const data = await res.json();
+                document.getElementById('typing')?.remove();
+                
+                if (data.success) {
+                    chatHistory.push({ role: 'user', content: msg });
+                    chatHistory.push({ role: 'assistant', content: data.response });
+                    div.innerHTML += `<div class="flex justify-start"><div class="chat-message bg-gray-200 rounded-xl px-4 py-2 whitespace-pre-wrap">${escapeHtml(data.response)}</div></div>`;
+                } else {
+                    div.innerHTML += `<div class="flex justify-start"><div class="chat-message bg-red-100 text-red-700 rounded-xl px-4 py-2">错误: ${data.error}</div></div>`;
+                }
+            } catch (e) {
+                document.getElementById('typing')?.remove();
+                div.innerHTML += `<div class="flex justify-start"><div class="chat-message bg-red-100 text-red-700 rounded-xl px-4 py-2">错误: ${e.message}</div></div>`;
+            }
+            div.scrollTop = div.scrollHeight;
+        }
+        
+        function formatSize(b) { 
+            return b < 1024 ? b + ' B' : b < 1048576 ? (b/1024).toFixed(1) + ' KB' : (b/1048576).toFixed(1) + ' MB'; 
+        }
+        
+        function escapeHtml(t) { 
+            const d = document.createElement('div'); 
+            d.textContent = t; 
+            return d.innerHTML; 
+        }
+        
+        loadPapers();
+    </script>
+</body>
+</html>

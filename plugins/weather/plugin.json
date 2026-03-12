@@ -1,0 +1,11 @@
+{
+  "name": "weather",
+  "version": "1.0.0",
+  "description": "天气查询插件",
+  "author": "XiaoMeng",
+  "enabled": true,
+  "priority": 100,
+  "requires": [],
+  "provides": ["weather_query"],
+  "hooks": ["on_message", "on_command"]
+}

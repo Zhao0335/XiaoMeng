@@ -1,0 +1,36 @@
+# XiaoMengCore 依赖
+
+# LLM 客户端
+openai>=1.0.0
+
+# Web 框架
+fastapi>=0.109.0
+uvicorn>=0.27.0
+websockets>=12.0
+pydantic>=2.0.0
+
+# 配置文件
+pyyaml>=6.0
+
+# 向量数据库
+chromadb>=0.4.0
+
+# 图数据库（可选）
+neo4j>=5.0.0
+
+# HTTP 客户端
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# 多模态分析（可选）
+# librosa>=0.10.0  # 语音分析
+# deepface>=0.0.90  # 面部表情识别
+
+# Transformer 模型（可选）
+# transformers>=4.30.0
+# torch>=2.0.0
+
+# 工具库
+python-multipart>=0.0.6
+aiofiles>=23.0.0
+requests>=2.31.0
