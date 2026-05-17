@@ -112,3 +112,40 @@ test_workspace/memory/
 test_workspace/users.json
 test_workspace/whitelist.json
 test_workspace/test_file.txt
+
+# ── 真实配置（含 API Key / Token）────────────────
+data/qq_config.json
+data/config.json
+
+# ── 聊天数据库（含所有对话记录）──────────────────
+data/qq_bot.db
+data/qq_bot.db-shm
+data/qq_bot.db-wal
+
+# ── 用户隐私数据（真实 QQ 号、权限等）────────────
+data/qq_admins.json
+data/qq_blacklist.json
+data/users.json
+data/whitelist.json
+data/identity_links.json
+
+# ── 用户记忆文件（含真实对话内容）────────────────
+data/memory/
+
+# ── 人格运行时生成文件（非人设定义本身）────────────
+data/persona/MEMORY.md
+data/persona/HEARTBEAT.md
+data/persona/IDENTITY.md
+data/persona/AGENTS.md
+data/persona/TOOLS.md
+
+# ── 向量数据库 / 学习数据 ────────────────────────
+data/chroma/
+data/.learnings/
+
+# ── 审计日志 & bot 运行时笔记 ─────────────────────
+data/audit/
+data/notes/
+
+# ── 未来愿望清单（不公开）────────────────────────
+WISH.md

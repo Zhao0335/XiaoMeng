@@ -1,588 +1,511 @@
-# XiaoMengCore
+# 小萌 QQ Bot
 
-> 一个支持跨平台身份统一的 AI Agent 框架
-> 
-> 兼容 OpenClaw 人设系统 | 多模型路由 | 三层协同调度 | 自主学习
+一个运行在 QQ 上的 AI 伙伴，基于 NapCat + 本地/云端多模型路由实现，有记忆、有性格、能上网、能管服务器。
 
 ---
 
-## ✨ 核心特性
+## 功能概览
 
-### 🌐 跨平台身份统一（v2 核心特性）
+### 消息处理
+- 私聊、群聊均支持
+- 群聊按概率随机回复，被 @ 必定回复
+- 主动发言：群里沉默一段时间后，bot 自己判断要不要说话
+- 模拟打字延迟，不会秒回
+- 安静时段（默认凌晨 1~8 点）不主动发言
 
-```
-用户 Alice:
-├── QQ: 12345
-├── 微信: wxid_alice
-└── Telegram: 456789
-        ↓
-    统一映射到 identity:alice
-        ↓
-    共享同一个会话历史
-```
-
-**效果**：无论用户从 QQ、微信还是 Telegram 发消息，Agent 都能识别是同一个人，保持对话连续性。
-
-### 🧠 Agent 自主学习
-
-- **错误学习**：记录错误和修正方案，避免重复犯错
-- **最佳实践**：积累成功经验，优化处理流程
-- **功能请求**：记录用户需求，指导功能迭代
-
-### 📚 OpenClaw 技能兼容
-
-- 完全兼容 OpenClaw 的 SKILL.md 格式
-- AI 通过阅读 Markdown 文件学习新技能
-- 支持技能热加载
-
-### 🎯 多模型智能路由
-
-| 层级 | 用途 | 推荐模型 |
-|------|------|----------|
-| Basic | 快速响应、简单任务 | Qwen-7B, Llama-8B |
-| Brain | 复杂推理、分析 | DeepSeek-V3, GPT-4 |
-| Special | 专业任务（代码、数学） | DeepSeek-Coder |
-
-### 🧩 可插拔多模态系统
+### 多模型路由
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    ModalityPluginSystem                     │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
-│  │ TextMod │ │VoiceMod │ │ FaceMod │ │ImageMod │  ← 插件   │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
-│       │           │           │           │                │
-│       └───────────┴─────┬─────┴───────────┘                │
-│                         ↓                                   │
-│              asyncio.gather() 并行执行                      │
-│                         ↓                                   │
-│              FusionStrategy 融合策略                        │
-└─────────────────────────────────────────────────────────────┘
+消息进来
+  ↓
+[PRO 关键词检测] → 命中 → deepseek-v4-pro（超复杂任务，默认关闭）
+  ↓ 未命中
+[路由模型判断] → CLOUD → deepseek-v4-flash（复杂推理、搜索）
+               → LOCAL → qwen2.5:14b（日常闲聊）
 ```
 
-- **可插拔**：随时添加/移除模态插件
-- **并行处理**：低延迟，总延迟 = max(各模态延迟)
-- **多种融合策略**：weighted / attention / voting / priority
+本地模型触发写文件/搜索等重型工具时，自动升级云端执行。
 
-### 📖 高级记忆系统
+可在 `data/routing_hints.md` 中写自然语言规则，手动干预路由决策。
 
-- **语义分析**：意图识别 + 情感分析 + 实体提取
-- **知识图谱**：Graphiti 时序记忆，支持关系演化
-- **混合检索**：向量 70% + BM25 30%
-- **记忆衰减**：旧记忆权重自动降低
+### 工具能力
+
+| 工具 | 说明 | 权限 |
+|------|------|------|
+| `web_search` | DuckDuckGo 搜索 | 所有人 |
+| `add_memory` | 记住某人/某事 | 所有人 |
+| `search_memory` | 搜索记忆 | 所有人 |
+| `recall_conversations` | 回溯历史对话 | 所有人 |
+| `update_soul` | 更新自己的人格文件 | 所有人 |
+| `read_file` | 读取 data/ 下的文件 | 所有人 |
+| `list_files` | 列出目录 | 所有人 |
+| `write_file` | 写入/修改文件 | 管理员+ |
+| `delete_file` | 删除文件 | 管理员+ |
+| `run_command` | 执行服务器命令 | 仅主人 |
+
+### 记忆系统
+
+- **对话压缩**：每 N 条消息自动压缩为摘要，存入 SQLite
+- **人物记忆**：每个人单独一个 `.md` 文件，跨会话持久
+- **知识库**：`data/memory/knowledge.md`，全局可见，bot 可自行学习写入
+- **向量检索**：ChromaDB 支持语义搜索记忆
+- **身份关联**：把同一个人的多个 QQ 号关联起来，共享记忆
+
+### 权限系统
+
+| 等级 | 说明 |
+|------|------|
+| OWNER | 主人，全权信任，可执行命令，写死在配置文件 |
+| ADMIN | 管理员，可写文件、管用户 |
+| STRANGER | 普通用户 |
+| BLACKLIST | 黑名单，静默忽略 |
+
+### QQ 管理命令
+
+| 命令 | 权限 |
+|------|------|
+| `/管理员 {QQ}` | 主人 |
+| `/取消管理员 {QQ}` | 主人 |
+| `/管理员列表` | 主人 |
+| `/拉黑 {QQ}` | 主人/管理员 |
+| `/取消拉黑 {QQ}` | 主人 |
+| `/黑名单` | 主人 |
+| `/同意好友 {QQ}` | 主人 |
+| `/拒绝好友 {QQ}` | 主人 |
+| `/待处理好友` | 主人 |
+| `/同意入群 {群号}` | 主人 |
+| `/拒绝入群 {群号}` | 主人 |
+| `/待处理入群` | 主人 |
+| `/重置记忆` | 主人/管理员 |
+| `/帮助` | 主人/管理员 |
+
+### 技能系统
+
+在 `data/skills/` 下放 `.md` 文件，bot 启动时自动加载作为 system prompt 的一部分。bot 也可以在运行时自己写新 skill。
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
-### 方式一：一键启动（推荐新手）
-
-1. **安装 Python 3.9+**
-   - 下载：https://www.python.org/downloads/
-   - 安装时勾选 "Add Python to PATH"
-
-2. **双击 `install.bat`** 安装依赖
-
-3. **双击 `start.bat`** 选择启动方式：
-   ```
-   [1] 启动管理面板 - 可视化管理界面
-   [2] 启动统一网关 (v1) - 基础消息入口
-   [3] 启动 v2 网关 - 跨平台身份统一
-   [4] 启动命令行对话 - 调试测试
-   ```
-
-### 方式二：命令行启动
+**前置要求**：NapCat 已安装并运行，Python 3.9+
 
 ```bash
-# 安装依赖
+# 1. 克隆仓库
+git clone <repo_url>
+cd XiaoMeng
+
+# 2. 安装依赖
 pip install -r requirements.txt
 
-# 启动管理面板
-python run_panel.py
+# 3. 初始化配置和目录（自动创建 data/ 下的所有必要文件）
+python setup.py
 
-# 启动 v2 网关
-python run_gateway_v2.py
+# 4. 编辑配置（填写 QQ 号、API Key、NapCat token）
+vi data/qq_config.json
 
-# 命令行对话
-python cli_chat.py
+# 5. 启动 QQ Bot
+python run_qq.py
 ```
 
 ---
 
-## 📁 项目结构
+## 配置文件说明
 
-```
-XiaoMengCore/
-├── start.bat              # 一键启动器
-├── install.bat            # 依赖安装
-├── run_panel.py           # 管理面板入口
-├── run_gateway_v2.py      # v2 网关入口
-├── cli_chat.py            # 命令行对话
-│
-├── core/                  # 核心模块
-│   ├── v2/               # v2 架构
-│   │   ├── identity.py   # 跨平台身份系统
-│   │   ├── gateway.py    # 统一网关
-│   │   ├── queue.py      # 消息队列
-│   │   ├── hooks.py      # 钩子系统
-│   │   ├── session.py    # 会话存储
-│   │   ├── adapters.py   # 渠道适配器
-│   │   └── tools.py      # 会话工具
-│   ├── processor.py      # 消息处理器
-│   ├── llm_client.py     # LLM 客户端
-│   ├── model_layer.py    # 三层模型路由
-│   ├── skills.py         # 技能系统
-│   ├── tools.py          # 工具系统
-│   ├── plugins.py        # 插件系统
-│   ├── self_improving.py # 自主学习
-│   ├── admin_panel.py    # 管理面板
-│   └── memory/           # 记忆系统
-│       ├── memory_manager.py  # 记忆管理器
-│       ├── semantic.py        # 语义分析
-│       ├── graphiti.py        # 知识图谱
-│       ├── multimodal.py      # 多模态融合
-│       ├── modality_plugin.py # 模态插件系统
-│       └── builtin_plugins.py # 内置模态插件
-│
-├── gateway/              # 网关模块
-│   ├── unified.py        # v1 统一网关
-│   └── paper_reader.py   # 论文阅读器 API
-│
-├── data/                 # 数据目录
-│   ├── config.json       # 主配置文件
-│   ├── identity_links.json # 身份映射配置
-│   ├── persona/          # 人设文件
-│   │   ├── SOUL.md       # 人格定义
-│   │   ├── AGENTS.md     # 行为规范
-│   │   ├── MEMORY.md     # 长期记忆
-│   │   └── USER.md       # 用户信息
-│   ├── skills/           # 技能文件
-│   └── plugins/          # 插件目录
-│
-└── web/                  # 前端文件
-    └── paper_reader.html # 论文阅读器
-```
-
----
-
-## 🏗️ 架构
-
-### v2 统一网关架构
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    XiaoMengCore v2 架构                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    渠道适配器层                               │  │
-│   │  QQ │ 微信 │ Telegram │ Discord │ HTTP │ WebSocket │ CLI   │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                              ↓                                      │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    GatewayV2 统一网关                         │  │
-│   │  ┌───────────┐  ┌───────────┐  ┌───────────┐               │  │
-│   │  │ Identity  │  │   Queue   │  │   Hooks   │               │  │
-│   │  │ 身份系统   │  │  消息队列  │  │  钩子系统  │               │  │
-│   │  └───────────┘  └───────────┘  └───────────┘               │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                              ↓                                      │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    会话存储层                                 │  │
-│   │  sessions.json (元数据)  +  .jsonl (完整记录)                │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                              ↓                                      │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    Agent 处理器                               │  │
-│   │         LLM 调用 │ 技能执行 │ 工具调用 │ 记忆检索            │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### 三层模型调度
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    三层模型调度系统                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Basic 层 - 快速响应                                  │   │
-│  │  • 简单问答、日常对话                                 │   │
-│  │  • 延迟 < 500ms                                      │   │
-│  │  • 推荐: Qwen-7B, Llama-8B                          │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          ↓                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Brain 层 - 复杂推理                                  │   │
-│  │  • 论文分析、代码生成、复杂推理                       │   │
-│  │  • 延迟 < 3s                                        │   │
-│  │  • 推荐: DeepSeek-V3, GPT-4                         │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          ↓                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Special 层 - 专业任务                                │   │
-│  │  • 代码审查、数学计算、专业分析                       │   │
-│  │  • 按需调用                                          │   │
-│  │  • 推荐: DeepSeek-Coder, Qwen-Math                  │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## ⚙️ 配置
-
-### 主配置文件 (data/config.json)
+`data/qq_config.json`（参考 `data/qq_config.example.json`）：
 
 ```json
 {
-    "llm": {
-        "provider": "deepseek",
-        "model": "deepseek-chat",
-        "api_key": "your_api_key",
-        "base_url": "https://api.deepseek.com/v1"
+  "owner_qq": 你的QQ号,
+  "bot_qq": bot的QQ号,
+  "bot_name": "小萌",
+  "data_dir": "./data",
+  "persona_path": "./data/persona/SOUL.md",
+
+  "napcat_ws_url": "ws://127.0.0.1:3001",
+  "napcat_token": "你在NapCat里设置的token",
+
+  "quiet_hours": { "start": 1, "end": 8 },
+
+  "group_response_prob": 0.08,
+  "typing_ms_per_char": 30,
+  "typing_max_ms": 4000,
+
+  "proactive_interval": { "min": 300, "max": 900 },
+  "proactive_min_messages": 3,
+
+  "memory": {
+    "compress_every": 20,
+    "short_term_keep": 10
+  },
+
+  "web_search_proxy": "",
+
+  "cloud_trigger": {
+    "min_chars": 200,
+    "keywords": ["分析", "代码", "总结", "推理", "数学", "写一篇", "帮我写"]
+  },
+
+  "pro_trigger_keywords": [
+    "认真", "写代码", "管理服务器", "帮我写代码",
+    "写个脚本", "调试", "部署", "架构", "详细方案"
+  ],
+
+  "models": [
+    {
+      "model_id": "qwen-router",
+      "layer": "basic", "role": "router",
+      "model_name": "qwen2.5:14b",
+      "endpoint": "http://localhost:11434",
+      "max_tokens": 20, "temperature": 0.0, "num_ctx": 8192,
+      "enabled": true
     },
-    "model_layers": {
-        "basic": {
-            "model": "qwen2.5:7b",
-            "base_url": "http://localhost:11434/v1"
-        },
-        "brain": {
-            "model": "deepseek-chat",
-            "base_url": "https://api.deepseek.com/v1"
-        },
-        "special": {
-            "model": "deepseek-coder",
-            "base_url": "https://api.deepseek.com/v1"
-        }
+    {
+      "model_id": "qwen-local",
+      "layer": "basic", "role": "chat",
+      "model_name": "qwen2.5:14b",
+      "endpoint": "http://localhost:11434",
+      "max_tokens": 8192, "temperature": 0.85, "num_ctx": 32768,
+      "enabled": true
     },
-    "user_groups": {
-        "owner": ["your_user_id"],
-        "admin": [],
-        "whitelist": [],
-        "blacklist": []
+    {
+      "model_id": "deepseek-cloud",
+      "layer": "brain", "role": "reasoning",
+      "model_name": "deepseek-v4-flash",
+      "endpoint": "https://api.deepseek.com/v1",
+      "api_key": "sk-...",
+      "max_tokens": 32768, "temperature": 0.7,
+      "enabled": true
+    },
+    {
+      "model_id": "deepseek-pro",
+      "layer": "pro", "role": "reasoning",
+      "model_name": "deepseek-v4-pro",
+      "endpoint": "https://api.deepseek.com/v1",
+      "api_key": "sk-...",
+      "max_tokens": 65536, "temperature": 0.6,
+      "enabled": false
     }
+  ],
+
+  "live2d": {
+    "tts_voice": "zh-CN-XiaoxiaoNeural",
+    "port": 8765
+  }
 }
 ```
 
-### 身份映射配置 (data/identity_links.json)
+### 配置项说明
 
-```json
-{
-    "identity_links": {
-        "alice": [
-            "qq:12345678",
-            "wechat:wxid_alice",
-            "telegram:123456789"
-        ],
-        "bob": [
-            "qq:87654321",
-            "discord:987654321"
-        ]
-    },
-    "identity_profiles": {
-        "alice": {
-            "display_name": "Alice Wang",
-            "level": "normal",
-            "group_id": "friends"
-        }
-    },
-    "dm_scope": "per-identity"
-}
-```
-
-**dm_scope 说明**：
-- `per-identity`: 同一身份共享会话（跨平台统一）
-- `per-platform`: 各平台独立会话
-
----
-
-## 🔌 API 接口
-
-### v2 网关 API
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/message` | POST | 统一消息入口 |
-| `/api/identity/link` | POST | 关联平台身份 |
-| `/api/identity/{id}` | GET | 获取身份信息 |
-| `/api/sessions` | GET | 列出活跃会话 |
-| `/api/session/{key}/history` | GET | 获取会话历史 |
-| `/ws/{user_id}` | WS | WebSocket 连接 |
-| `/dashboard` | GET | 管理面板 |
-
-### 发送消息示例
-
-```bash
-curl -X POST http://localhost:8080/api/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "你好",
-    "user_id": "12345",
-    "platform": "qq"
-  }'
-```
-
-### 关联身份示例
-
-```bash
-curl -X POST http://localhost:8080/api/identity/link \
-  -H "Content-Type: application/json" \
-  -d '{
-    "identity_id": "alice",
-    "platform": "qq",
-    "platform_user_id": "12345678",
-    "display_name": "Alice"
-  }'
-```
-
----
-
-## 📚 技能系统
-
-### 技能文件格式 (SKILL.md)
-
-```markdown
----
-name: paper-reading
-description: 论文阅读和分析技能
-version: 1.0.0
-emoji: 📚
----
-
-# 论文阅读技能
-
-## 使用说明
-
-当用户需要分析论文时，使用此技能。
-
-## 步骤
-
-1. 提取论文标题和摘要
-2. 分析论文结构和主要贡献
-3. 总结关键发现
-4. 提供批判性评价
-
-## 示例
-
-用户请求: 帮我分析这篇论文
-响应: 我来帮你分析这篇论文...
-```
-
-### 添加新技能
-
-1. 在 `data/skills/` 下创建文件夹
-2. 添加 `SKILL.md` 文件
-3. 重启服务或通过管理面板热加载
-
----
-
-## 🧩 插件系统
-
-### 插件结构
-
-```
-data/plugins/
-└── my_plugin/
-    ├── plugin.json       # 插件元数据
-    ├── main.py          # 插件主文件
-    └── config.json      # 插件配置
-```
-
-### 插件元数据 (plugin.json)
-
-```json
-{
-    "name": "weather",
-    "version": "1.0.0",
-    "description": "天气查询插件",
-    "author": "developer",
-    "tools": ["get_weather"],
-    "hooks": ["before_agent_start"]
-}
-```
-
----
-
-## 🔐 权限系统
-
-| 等级 | 权限 |
+| 字段 | 说明 |
 |------|------|
-| owner | 所有操作、系统控制、硬件控制 |
-| admin | 用户管理、配置修改 |
-| whitelist | 日常聊天、技能使用 |
-| normal | 基础对话 |
-| blacklist | 拒绝服务 |
+| `quiet_hours` | 安静时段，start~end 点之间不主动发言 |
+| `group_response_prob` | 群里没被@时的随机回复概率（0~1） |
+| `typing_ms_per_char` | 每字符打字延迟（毫秒） |
+| `proactive_interval` | 主动发言间隔范围（秒） |
+| `memory.compress_every` | 每 N 条消息压缩一次对话历史 |
+| `cloud_trigger` | 触发云端模型的字数/关键词条件 |
+| `pro_trigger_keywords` | 触发 Pro 层的关键词 |
 
 ---
 
-## 🛠️ 开发指南
+## Live2D 模式（可选）
 
-### 添加渠道适配器
+Live2D 后端允许前端网页通过 WebSocket 接入小萌，支持带验证的 QQ 身份登录。
 
-```python
-from core.v2 import ChannelAdapter, Platform, IncomingMessage
-
-class MyAdapter(ChannelAdapter):
-    def __init__(self, gateway):
-        super().__init__(gateway, Platform.HTTP)
-    
-    async def receive(self, content, user_id, **kwargs):
-        message = IncomingMessage(
-            content=content,
-            platform=self._platform,
-            platform_user_id=user_id
-        )
-        return await self._gateway.receive(message)
+```bash
+# 启动 Live2D 后端（需要安装 llm-live2d 库）
+cd XiaoMeng
+uvicorn run_live2d:app --host 0.0.0.0 --port 8765
 ```
 
-### 添加钩子
-
-```python
-from core.v2 import HookPoint, HookContext
-
-async def my_hook(context: HookContext):
-    print(f"钩子触发: {context.hook_point}")
-    return context
-
-gateway.register_hook("my_hook", HookPoint.BEFORE_AGENT_START, my_hook)
-```
-
-### 添加工具
-
-```python
-from core.v2 import SessionTools
-
-async def my_tool(session_key: str, message: str):
-    return {"success": True, "result": "处理完成"}
-
-session_tools = SessionTools(gateway)
-```
+登录流程：
+1. 前端发 `{"type": "login_request", "qq": 12345678}`
+2. 后端通过 NapCat 给该 QQ 发验证码
+3. 前端发 `{"type": "verify_code", "qq": 12345678, "code": "XXXXXX"}`
+4. 验证通过后开始对话
 
 ---
 
-## 🧠 记忆系统
-
-XiaoMengCore 支持多层记忆系统，完全兼容 OpenClaw 人设格式：
-
-### 记忆类型
-
-| 类型 | 存储 | 用途 |
-|------|------|------|
-| 人设记忆 | `data/persona/*.md` | 人格、行为规范、身份信息 |
-| 短期记忆 | 会话上下文 | 当前对话 |
-| 长期记忆 | `data/memory/YYYY-MM-DD.md` | 每日记忆日记 |
-| 向量记忆 | ChromaDB | RAG 语义检索 |
-| 图谱记忆 | Neo4j | 时序知识图谱 |
-
-### 人设文件
+## 项目结构
 
 ```
-data/persona/
-├── SOUL.md      # 人格定义（性格、说话风格）
-├── AGENTS.md    # 行为规范（如何与不同用户交互）
-├── IDENTITY.md  # 身份信息（名字、背景、能力）
-├── USER.md      # 用户信息（主人的信息）
-├── TOOLS.md     # 工具说明（可用工具）
-├── MEMORY.md    # 长期记忆（重要事实）
-└── HEARTBEAT.md # 心跳任务（定时行为）
-```
-
-### 使用记忆系统
-
-```python
-from core.memory import MemoryManager
-
-memory = MemoryManager.get_instance()
-
-# 添加记忆
-memory.add_memory(user, "主人今天心情很好", tags=["mood"])
-
-# 搜索记忆
-results = memory.search_memories(user, "心情", limit=5)
-
-# 获取 LLM 上下文
-context = memory.get_context_for_llm(user, current_message)
+XiaoMeng/
+├── run_qq.py              # QQ Bot 启动入口
+├── run_live2d.py          # Live2D 后端启动入口（uvicorn）
+├── setup.py               # 初始化脚本（首次运行）
+├── requirements.txt
+│
+├── core/
+│   ├── qq/
+│   │   ├── gateway.py     # 核心协调器（消息路由、LLM调用、记忆管理）
+│   │   ├── napcat.py      # NapCat WebSocket 客户端
+│   │   ├── onebot_events.py # OneBot v11 事件解析
+│   │   ├── tools.py       # 工具执行器
+│   │   ├── commands.py    # 管理命令解析
+│   │   ├── permissions.py # 权限管理
+│   │   └── proactive.py   # 主动发言
+│   ├── model_layer.py     # 多模型路由（Basic/Brain/Pro 层）
+│   └── live2d_provider.py # Live2D LLM 适配器
+│
+├── models/
+│   └── core.py            # 核心数据模型（用户、消息、情感等）
+│
+└── data/                  # 运行时数据（git ignored，用 setup.py 初始化）
+    ├── qq_config.json      # 配置（含API Key，不上传）
+    ├── qq_config.example.json
+    ├── qq_bot.db           # 聊天数据库
+    ├── qq_admins.json      # 管理员列表
+    ├── qq_blacklist.json   # 黑名单
+    ├── users.json          # 用户注册表
+    ├── whitelist.json      # 白名单
+    ├── identity_links.json # QQ 号关联（同一人的多个账号）
+    ├── routing_hints.md    # 手动路由规则（自然语言）
+    ├── persona/SOUL.md     # bot 人格定义
+    ├── memory/             # 每个人的记忆文件（.md）
+    ├── skills/             # 技能文件（.md，启动时加载）
+    ├── notes/              # bot 的笔记
+    ├── audit/              # 操作审计日志
+    └── chroma/             # ChromaDB 向量库（语义记忆检索）
 ```
 
 ---
 
-## 🗜️ 会话压缩
-
-当会话上下文过长时，自动压缩历史对话：
-
-### 压缩机制
+## 依赖
 
 ```
-原始对话 (8000 tokens)
-    ↓
-[摘要] 之前讨论了项目架构...
-    ↓
-压缩后 (2000 tokens)
+openai>=1.0.0
+aiohttp>=3.9.0
+httpx>=0.25.0
+websockets>=12.0
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.0.0
+pyyaml>=6.0
+chromadb>=0.4.0
+aiofiles>=23.0.0
+requests>=2.31.0
+python-multipart>=0.0.6
 ```
 
-### 配置压缩
+本地模型需要 [Ollama](https://ollama.com)，云端使用 DeepSeek API（或任何兼容 OpenAI 格式的接口）。
 
-```python
-from core.v2 import Compactor, CompactionConfig, AutoCompactor
+Live2D 模式额外需要 `llm-live2d` 库（单独安装）。
 
-config = CompactionConfig(
-    max_tokens=4000,      # 触发压缩的阈值
-    target_tokens=2000,   # 压缩目标
-    keep_recent_messages=5  # 保留最近消息数
-)
+---
 
-compactor = Compactor(llm_client=llm, config=config)
+## 运维手册
 
-# 手动压缩
-result = await compactor.compact(entries)
-print(f"压缩: {result.original_tokens} -> {result.compressed_tokens} tokens")
+> 本节面向日常维护，不需要懂代码，只需要能 SSH 进服务器。
 
-# 自动压缩
-auto_compactor = AutoCompactor(session_store, compactor, config)
-result = await auto_compactor.check_and_compact(session_key)
+### 整体架构
+
+小萌由三个独立进程组成，互相之间通过本地端口通信：
+
+```
+[QQ 客户端 + NapCat]  ←─ Docker Compose  ─→  ws://127.0.0.1:3002
+         ↓
+  [小萌 Bot 进程]      ←─ systemd 服务    ─→  xiaomeng-bot.service
+         ↓
+    [Ollama 本地模型]  ←─ systemd 服务    ─→  ollama.service
 ```
 
-### 压缩钩子
+三个组件任意一个挂了，bot 都会停止响应。排查问题时按上面从下往上检查。
 
-```python
-from core.v2 import HookPoint, HookContext
+---
 
-async def before_compaction_hook(ctx: HookContext):
-    print(f"即将压缩会话: {ctx.session_key}")
-    return ctx
+### 查看状态
 
-gateway.register_hook("compaction", HookPoint.BEFORE_COMPACTION, before_compaction_hook)
+**一眼确认三个组件是否正常：**
+
+```bash
+systemctl status xiaomeng-bot --no-pager
+systemctl status ollama --no-pager
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep xiao
+```
+
+正常状态应该看到：
+- `xiaomeng-bot`：`active (running)`
+- `ollama`：`active (running)`
+- `xiaomeng-qq` 和 `xiaomeng-napcat` 两个容器：`Up X hours`
+
+---
+
+### 查看日志
+
+**实时跟踪日志（最常用）：**
+
+```bash
+journalctl -u xiaomeng-bot -f
+```
+
+按 `Ctrl+C` 退出。
+
+**查看最近 100 条：**
+
+```bash
+journalctl -u xiaomeng-bot -n 100 --no-pager
+```
+
+**只看报错：**
+
+```bash
+journalctl -u xiaomeng-bot -p err -n 50 --no-pager
+```
+
+**查看某个时间段的日志：**
+
+```bash
+journalctl -u xiaomeng-bot --since "2026-05-17 18:00" --until "2026-05-17 19:00" --no-pager
+```
+
+**查看 NapCat 容器日志：**
+
+```bash
+cd /home/qwq/napcat_xiaomeng
+docker compose logs -f xiaomeng-napcat
+```
+
+**日志里常见内容解读：**
+
+| 日志片段 | 含义 |
+|----------|------|
+| `路由决策: 'LOCAL' → 本地` | 当前消息用本地 Ollama 回复 |
+| `路由决策: 'CLOUD' → 云端` | 当前消息走 DeepSeek 云端 |
+| `工具调用 web_search` | bot 正在联网搜索 |
+| `群消息 {群号} from {QQ} at_bot=True` | 有人 @ 了 bot |
+| `[Ollama] done=length` | 本地模型因 token 限制截断（上下文太长） |
+| `ConnectionRefusedError` | 连不上 NapCat，检查 Docker 容器 |
+| `Restart=on-failure` 后 bot 重启 | bot 崩溃了，查前面日志找原因 |
+
+---
+
+### 重启与停止
+
+**重启 bot（最常用，改了配置/代码后用这个）：**
+
+```bash
+sudo systemctl restart xiaomeng-bot
+```
+
+**重启后验证是否起来：**
+
+```bash
+systemctl status xiaomeng-bot --no-pager
+journalctl -u xiaomeng-bot -n 20 --no-pager
+```
+
+**停止 / 启动：**
+
+```bash
+sudo systemctl stop xiaomeng-bot
+sudo systemctl start xiaomeng-bot
+```
+
+**重启 NapCat（QQ 掉线或 WebSocket 连不上时）：**
+
+```bash
+cd /home/qwq/napcat_xiaomeng
+docker compose restart
+```
+
+**重启 Ollama（本地模型卡死时）：**
+
+```bash
+sudo systemctl restart ollama
 ```
 
 ---
 
-## 📦 依赖
+### 修改配置后生效
 
-```
-Python >= 3.9
-openai >= 1.0.0
-fastapi >= 0.100.0
-uvicorn >= 0.23.0
-pyyaml >= 6.0
-aiohttp >= 3.8.0
-chromadb >= 0.4.0 (可选)
+修改 `data/qq_config.json` 后需要重启 bot：
+
+```bash
+# 先检查 JSON 格式是否正确
+python3 -c "import json; json.load(open('data/qq_config.json'))" && echo "格式正确"
+
+# 再重启
+sudo systemctl restart xiaomeng-bot
 ```
 
 ---
 
-## 📄 许可证
+### 常见问题排查
 
-MIT License
+#### bot 完全不响应
+
+1. 检查 bot 进程：`systemctl status xiaomeng-bot`
+2. 检查 NapCat 容器：`docker ps | grep xiao`
+3. 检查 bot 和 NapCat 的连接端口是否一致：  
+   配置文件 `napcat_ws_url` 应为 `ws://127.0.0.1:3002`（注意是 3002 不是 3001）
+
+#### 只响应一半，或者回复很慢
+
+- 云端 DeepSeek API 限速或网络问题：`journalctl -u xiaomeng-bot -f` 看有没有 API 报错
+- 本地 Ollama 被撑爆：`journalctl -u ollama -f` 看有没有内存 OOM
+
+#### 出现 `done=length`（回复被截断）
+
+本地模型的 `num_ctx`（上下文长度）满了。解决方法：
+1. 发 `/重置记忆` 清除当前会话的上下文
+2. 或在 `qq_config.json` 里调大 `qwen-local` 的 `num_ctx`（会占更多显存）
+
+#### QQ 掉线 / 扫码重登
+
+```bash
+# 打开 NapCat WebUI（需要本地访问或 SSH 端口转发）
+# 浏览器打开 http://127.0.0.1:3081
+```
+
+如果是远程服务器，先在本地做 SSH 端口转发：
+
+```bash
+ssh -L 3081:127.0.0.1:3081 用户名@服务器IP
+# 然后浏览器打开 http://127.0.0.1:3081
+```
+
+#### bot 崩溃循环重启
+
+systemd 配置了 `Restart=on-failure`，崩溃后会自动重启。查崩溃原因：
+
+```bash
+journalctl -u xiaomeng-bot -n 200 --no-pager | grep -E "ERROR|Traceback|Exception"
+```
 
 ---
 
-## 🙏 致谢
+### 查看记忆文件
 
-- [OpenClaw](https://github.com/openclaw/openclaw) - 人设文件格式和技能系统参考
-- [PyGPT](https://github.com/szczyglis-dev/py-gpt) - 桌面助手架构参考
-- [GLM-5 / Trae AI Assistant](https://www.trae.ai) - 核心架构设计、代码实现、文档撰写
+每个用户的记忆存在 `data/memory/` 下，文件名是 QQ 号：
+
+```bash
+ls data/memory/
+cat data/memory/user_123456.md   # 查看某人的记忆
+```
+
+手动编辑记忆文件后不需要重启 bot，下次 bot 访问该记忆时自动生效。
+
+---
+
+### 操作审计日志
+
+bot 的文件读写操作会记录在 `data/audit/audit.jsonl`，每行一条 JSON：
+
+```bash
+# 查看最近操作
+tail -20 data/audit/audit.jsonl | python3 -m json.tool
+
+# 用 jq 过滤（如果装了 jq）
+tail -50 data/audit/audit.jsonl | jq '{time: .timestamp, file: .file_path, by: .user_id}'
+```
+
+---
+
+### 升级代码
+
+```bash
+cd /home/qwq/zcx_ai_group_friend
+git pull
+sudo systemctl restart xiaomeng-bot
+journalctl -u xiaomeng-bot -f  # 确认重启成功
+```

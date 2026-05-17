@@ -21,10 +21,11 @@ class ModelLayer(Enum):
     BASIC = "basic"
     BRAIN = "brain"
     SPECIAL = "special"
+    PRO = "pro"
 
 
 class ModelRole(Enum):
-    ROUTER = "router"
+    ROUTER = "router"    # 专职路由判断（轻量模型）
     CHAT = "chat"
     REASONING = "reasoning"
     CODE = "code"
@@ -60,6 +61,8 @@ class ModelEndpoint:
     timeout: int = 60
     enabled: bool = True
     priority: int = 1
+    proxy: Optional[str] = None          # e.g. "http://127.0.0.1:7890"
+    num_ctx: Optional[int] = None        # ollama only: context window size
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     
@@ -90,6 +93,7 @@ class ModelResponse:
     token_count: int = 0
     tool_calls: List[Dict] = field(default_factory=list)
     finish_reason: str = "stop"
+    reasoning_content: Optional[str] = None   # 推理模型（如 DeepSeek R1）的思考链
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict:
@@ -185,26 +189,36 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
             
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
             
+            proxy = self.endpoint.proxy or None
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     f"{self.endpoint.endpoint}/chat/completions",
                     json=payload,
-                    headers=headers
+                    headers=headers,
+                    proxy=proxy,
                 ) as response:
                     if response.status != 200:
                         error_text = await response.text()
                         raise Exception(f"API error: {response.status} - {error_text}")
-                    
+
                     data = await response.json()
-            
+
             choice = data["choices"][0]
-            content = choice["message"]["content"] or ""
-            tool_calls = choice["message"].get("tool_calls", [])
-            
+            msg = choice["message"]
+            content = msg.get("content") or ""
+            tool_calls_raw = msg.get("tool_calls") or []
+            reasoning_content = msg.get("reasoning_content")  # 推理模型专属
+
+            # 优先用标准 tool_calls 字段；没有时尝试从 content 解析 DSML 格式
+            if tool_calls_raw:
+                parsed_tool_calls = self._parse_tool_calls(tool_calls_raw)
+            else:
+                parsed_tool_calls, content = self._parse_dsml_tool_calls(content)
+
             latency_ms = (time.time() - start_time) * 1000
             self._request_count += 1
             self._total_latency += latency_ms
-            
+
             return ModelResponse(
                 content=content,
                 model_id=self.endpoint.model_id,
@@ -212,13 +226,14 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
                 layer=self.endpoint.layer,
                 latency_ms=latency_ms,
                 token_count=data.get("usage", {}).get("completion_tokens", 0),
-                tool_calls=self._parse_tool_calls(tool_calls),
-                finish_reason=choice.get("finish_reason", "stop")
+                tool_calls=parsed_tool_calls,
+                finish_reason=choice.get("finish_reason", "stop"),
+                reasoning_content=reasoning_content,
             )
-            
+
         finally:
             self._busy = False
-    
+
     async def chat_stream(
         self,
         messages: List[Dict],
@@ -226,15 +241,15 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
         **kwargs
     ) -> AsyncGenerator[str, None]:
         import aiohttp
-        
+
         self._busy = True
-        
+
         try:
             full_messages = []
             if system_prompt:
                 full_messages.append({"role": "system", "content": system_prompt})
             full_messages.extend(messages)
-            
+
             payload = {
                 "model": self.endpoint.model_name,
                 "messages": full_messages,
@@ -242,18 +257,20 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
                 "temperature": kwargs.get("temperature", self.endpoint.temperature),
                 "stream": True
             }
-            
+
             headers = {"Content-Type": "application/json"}
             if self.endpoint.api_key:
                 headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
-            
+
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
-            
+            proxy = self.endpoint.proxy or None
+
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     f"{self.endpoint.endpoint}/chat/completions",
                     json=payload,
-                    headers=headers
+                    headers=headers,
+                    proxy=proxy,
                 ) as response:
                     async for line in response.content:
                         line = line.decode('utf-8').strip()
@@ -275,12 +292,92 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
     def _parse_tool_calls(self, tool_calls: List) -> List[Dict]:
         result = []
         for tc in tool_calls:
+            try:
+                args_raw = tc.get("function", {}).get("arguments", "{}")
+                args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+            except Exception:
+                args = {}
             result.append({
                 "id": tc.get("id", ""),
                 "name": tc.get("function", {}).get("name", ""),
-                "arguments": json.loads(tc.get("function", {}).get("arguments", "{}"))
+                "arguments": args,
             })
         return result
+
+    @staticmethod
+    def _parse_dsml_tool_calls(content: str):
+        """
+        解析 DeepSeek 推理模型在 content 里输出的 DSML 格式工具调用。
+        返回 (tool_calls_list, cleaned_content)。
+        DSML 格式：<｜｜DSML｜｜tool_calls>...<｜｜DSML｜｜invoke name="...">...</>
+        """
+        P = "｜｜DSML｜｜"   # fullwidth vertical lines + DSML + fullwidth vertical lines
+        tc_open  = f"<{P}tool_calls>"
+        tc_close = f"</{P}tool_calls>"
+
+        start = content.find(tc_open)
+        if start == -1:
+            return [], content
+        end = content.find(tc_close, start)
+        if end == -1:
+            return [], content
+
+        tc_block = content[start + len(tc_open) : end]
+        cleaned = content[:start].strip()
+
+        calls = []
+        inv_prefix = f"<{P}invoke name=\""
+        inv_close  = f"</{P}invoke>"
+        param_prefix = f"<{P}parameter name=\""
+        param_close  = f"</{P}parameter>"
+
+        pos = 0
+        idx = 0
+        while True:
+            s = tc_block.find(inv_prefix, pos)
+            if s == -1:
+                break
+            name_start = s + len(inv_prefix)
+            name_end = tc_block.find('">', name_start)
+            if name_end == -1:
+                break
+            tool_name = tc_block[name_start:name_end]
+
+            body_start = name_end + 2
+            inv_end = tc_block.find(inv_close, body_start)
+            if inv_end == -1:
+                break
+            params_block = tc_block[body_start:inv_end]
+
+            args = {}
+            pp = 0
+            while True:
+                ps = params_block.find(param_prefix, pp)
+                if ps == -1:
+                    break
+                pname_start = ps + len(param_prefix)
+                pname_end = params_block.find('"', pname_start)
+                if pname_end == -1:
+                    break
+                param_name = params_block[pname_start:pname_end]
+                tag_end = params_block.find('>', pname_end)
+                if tag_end == -1:
+                    break
+                pc = params_block.find(param_close, tag_end)
+                if pc == -1:
+                    break
+                param_value = params_block[tag_end + 1 : pc].strip()
+                try:
+                    args[param_name] = json.loads(param_value)
+                except Exception:
+                    args[param_name] = param_value
+                pp = pc + len(param_close)
+
+            calls.append({"id": f"dsml_{idx}", "name": tool_name, "arguments": args})
+            idx += 1
+            pos = inv_end + len(inv_close)
+
+        return calls, cleaned
 
 
 class OllamaAdapter(BaseModelAdapter):
@@ -303,18 +400,23 @@ class OllamaAdapter(BaseModelAdapter):
                 full_messages.append({"role": "system", "content": system_prompt})
             full_messages.extend(messages)
             
+            options: Dict = {
+                "num_predict": kwargs.get("max_tokens", self.endpoint.max_tokens),
+                "temperature": kwargs.get("temperature", self.endpoint.temperature),
+            }
+            if self.endpoint.num_ctx:
+                options["num_ctx"] = self.endpoint.num_ctx
             payload = {
                 "model": self.endpoint.model_name,
                 "messages": full_messages,
                 "stream": False,
-                "options": {
-                    "num_predict": kwargs.get("max_tokens", self.endpoint.max_tokens),
-                    "temperature": kwargs.get("temperature", self.endpoint.temperature)
-                }
+                "options": options,
             }
-            
+            if tools:
+                payload["tools"] = tools
+
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
-            
+
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     f"{self.endpoint.endpoint}/api/chat",
@@ -323,21 +425,46 @@ class OllamaAdapter(BaseModelAdapter):
                     if response.status != 200:
                         error_text = await response.text()
                         raise Exception(f"Ollama error: {response.status} - {error_text}")
-                    
+
                     data = await response.json()
-            
-            content = data["message"]["content"]
+
+            msg = data["message"]
+            content = msg.get("content") or ""
+            tool_calls_raw = msg.get("tool_calls") or []
+
+            # Ollama tool_calls 格式: [{"function": {"name": ..., "arguments": {...}}}]
+            parsed_tool_calls = []
+            for tc in tool_calls_raw:
+                fn = tc.get("function", {})
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {}
+                parsed_tool_calls.append({
+                    "id": tc.get("id", f"ollama_{len(parsed_tool_calls)}"),
+                    "name": fn.get("name", ""),
+                    "arguments": args,
+                })
+
             latency_ms = (time.time() - start_time) * 1000
             self._request_count += 1
             self._total_latency += latency_ms
-            
+
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                f"[Ollama] done={data.get('done_reason')} tc={len(parsed_tool_calls)} content={content!r:.120}"
+            )
+
             return ModelResponse(
                 content=content,
                 model_id=self.endpoint.model_id,
                 model_name=self.endpoint.model_name,
                 layer=self.endpoint.layer,
                 latency_ms=latency_ms,
-                token_count=0
+                token_count=0,
+                tool_calls=parsed_tool_calls,
             )
             
         finally:
@@ -359,14 +486,17 @@ class OllamaAdapter(BaseModelAdapter):
                 full_messages.append({"role": "system", "content": system_prompt})
             full_messages.extend(messages)
             
+            options: Dict = {
+                "num_predict": kwargs.get("max_tokens", self.endpoint.max_tokens),
+                "temperature": kwargs.get("temperature", self.endpoint.temperature),
+            }
+            if self.endpoint.num_ctx:
+                options["num_ctx"] = self.endpoint.num_ctx
             payload = {
                 "model": self.endpoint.model_name,
                 "messages": full_messages,
                 "stream": True,
-                "options": {
-                    "num_predict": kwargs.get("max_tokens", self.endpoint.max_tokens),
-                    "temperature": kwargs.get("temperature", self.endpoint.temperature)
-                }
+                "options": options,
             }
             
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
@@ -466,7 +596,8 @@ class ModelLayerRouter:
         self._layers: Dict[ModelLayer, List[str]] = {
             ModelLayer.BASIC: [],
             ModelLayer.BRAIN: [],
-            ModelLayer.SPECIAL: []
+            ModelLayer.SPECIAL: [],
+            ModelLayer.PRO: [],
         }
         self._roles: Dict[ModelRole, List[str]] = {
             role: [] for role in ModelRole
@@ -475,7 +606,10 @@ class ModelLayerRouter:
         self._basic_model_id: Optional[str] = None
     
     def register_model(self, endpoint: ModelEndpoint) -> str:
-        if "ollama" in endpoint.endpoint.lower():
+        # 11434 是 ollama 默认端口；endpoint 含 "ollama" 或端口为 11434 → 用原生 API
+        ep_lower = endpoint.endpoint.lower()
+        is_ollama = "ollama" in ep_lower or ":11434" in ep_lower
+        if is_ollama:
             adapter = OllamaAdapter(endpoint)
         else:
             adapter = OpenAICompatibleAdapter(endpoint)
