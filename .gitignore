@@ -132,12 +132,12 @@ data/identity_links.json
 # ── 用户记忆文件（含真实对话内容）────────────────
 data/memory/
 
-# ── 人格运行时生成文件（非人设定义本身）────────────
+# ── 人设运行时文件（实例专属，从模板生成）─────────
+data/persona/SOUL.md
 data/persona/MEMORY.md
-data/persona/HEARTBEAT.md
-data/persona/IDENTITY.md
-data/persona/AGENTS.md
-data/persona/TOOLS.md
+
+# ── 实例级路由学习记录 ────────────────────────────
+data/routing_hints.md
 
 # ── 向量数据库 / 学习数据 ────────────────────────
 data/chroma/
