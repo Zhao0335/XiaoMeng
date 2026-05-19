@@ -28,7 +28,7 @@ from ..events import (
 from ..services import ChatEngine
 from ..utils import load_config, save_config, set_nested, get_nested, parse_value, is_sensitive, mask_value, truncate
 from ..widgets.mascot import MASCOT_TINY, MASCOT_SMALL, MASCOT_FULL, MOOD_FACES, MOOD_MAP
-from ..widgets.chat_view import ChatView, ChatInputBar
+from ..widgets.chat_view import ChatView, ChatInput
 from ..widgets.config_tree import ConfigTreeWidget
 from ..widgets.status_view import StatusViewWidget
 from ..widgets.help_view import HelpViewWidget
@@ -181,7 +181,7 @@ class MainScreen(Screen):
                 with TabbedContent(initial="chat-tab", id="main-tabs"):
                     with TabPane("💬 Chat", id="chat-tab"):
                         yield ChatView(id="chat-view")
-                        yield ChatInputBar(
+                        yield ChatInput(
                             placeholder="Type a message...",
                             id="chat-input",
                         )
@@ -380,14 +380,14 @@ class MainScreen(Screen):
 
     def action_focus_input(self) -> None:
         try:
-            inp = self.query_one("#chat-input", ChatInputBar)
+            inp = self.query_one("#chat-input", ChatInput)
             inp.focus()
         except Exception:
             pass
 
     def action_blur_input(self) -> None:
         try:
-            inp = self.query_one("#chat-input", ChatInputBar)
+            inp = self.query_one("#chat-input", ChatInput)
             if inp.has_focus:
                 self.set_focus(None)
         except Exception:

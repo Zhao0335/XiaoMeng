@@ -420,10 +420,6 @@ class QQGateway:
             coro_factory=self._make_task_coro_factory(),
         )
 
-        await self._send_private_delayed(
-            qq,
-            f"收到~ (任务ID: {task.task_id})",
-        )
         logger.info(f"任务 {task.task_id} 已创建 (私聊 {qq})")
 
     # ──────────────────────────────────────────────

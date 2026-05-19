@@ -1,14 +1,14 @@
 """Help view widget — keyboard shortcuts and about info."""
 
-from textual.containers import VerticalScroll
 from textual.widgets import Static
-from rich.text import Text
 from rich.style import Style
 from rich.panel import Panel
 from rich.table import Table
+from rich.console import Console
 
-from ..theme import ACCENT, SUCCESS, FG_PRIMARY, FG_DIM, FG_SECONDARY
+from ..theme import ACCENT, SUCCESS, FG_PRIMARY, FG_DIM
 
+_console = Console()
 
 HELP_SECTIONS = {
     "🌐 Global": [
@@ -38,27 +38,23 @@ HELP_SECTIONS = {
 }
 
 
-class HelpViewWidget(VerticalScroll):
+class HelpViewWidget(Static):
     """Keyboard shortcuts and about panel."""
 
     DEFAULT_CSS = """
     HelpViewWidget {
         width: 100%;
         height: 1fr;
-        padding: 1 2;
-        overflow-y: auto;
-    }
-    HelpViewWidget Static {
-        width: 100%;
-        padding: 1 0;
+        padding: 0 2;
     }
     """
 
-    def on_mount(self) -> None:
-        self._render()
+    def __init__(self):
+        super().__init__(self._build_content())
 
-    def _render(self) -> None:
-        self.remove_children()
+    @staticmethod
+    def _build_content() -> str:
+        parts: list[str] = []
 
         for section, shortcuts in HELP_SECTIONS.items():
             table = Table(
@@ -73,34 +69,20 @@ class HelpViewWidget(VerticalScroll):
             for key, action in shortcuts:
                 table.add_row(key, action)
 
-            self.mount(
-                Static(
-                    Panel(
-                        table,
-                        title=section,
-                        title_align="left",
-                        border_style=Style(color=FG_DIM),
-                    )
-                )
-            )
+            parts.append(_render_panel(table, title=section))
 
-        about = Text()
-        about.append("LingMeng OS v3.0\n", Style(color=ACCENT, bold=True))
-        about.append("terminal companion\n", Style(color=FG_PRIMARY))
-        about.append("\n")
-        about.append("AI maid spirit living inside your shell.\n", Style(color=FG_DIM))
-        about.append(
-            "Gentle, loyal, adorable — powered by Textual.\n",
-            Style(color=FG_DIM),
+        about = (
+            "[bold #b8a0ff]LingMeng OS v3.0[/]\n"
+            "terminal companion\n"
+            "\n"
+            "[dim]AI maid spirit living inside your shell.[/]\n"
+            "[dim]Gentle, loyal, adorable — powered by Textual.[/]"
         )
+        parts.append(_render_panel(about, title="💜 About"))
 
-        self.mount(
-            Static(
-                Panel(
-                    about,
-                    title="💜 About",
-                    title_align="left",
-                    border_style=Style(color=FG_DIM),
-                )
-            )
-        )
+        return "\n\n".join(parts)
+
+
+def _render_panel(renderable, title: str = "", **kwargs) -> str:
+    segments = _console.render(Panel(renderable, title=title, **kwargs))
+    return "\n".join(seg.text for seg in segments)

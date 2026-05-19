@@ -1,103 +1,87 @@
-"""Config tree widget — interactive configuration editor."""
+"""Config tree widget — interactive configuration editor.
 
-from typing import Any, Dict, List
+Single Static with pre-rendered Rich Text — zero child mounting,
+zero timing issues.
+"""
 
-from textual.widgets import Tree
-from textual.widgets.tree import TreeNode
+from typing import Any, Dict
+
+from textual.widgets import Static
 from rich.text import Text
 from rich.style import Style
 
-from ..theme import TREE_NODE, TREE_LEAF, SUCCESS, WARNING, ERROR, ACCENT
+from ..theme import ACCENT, SUCCESS, ERROR, FG_PRIMARY, FG_SECONDARY, FG_DIM
 from ..utils import is_sensitive, mask_value, truncate
 
 
-class ConfigTreeWidget(Tree):
-    """Interactive config tree with inline editing capabilities."""
+class ConfigTreeWidget(Static):
+    """Config display as an indented, scrollable list of key-value pairs."""
 
     DEFAULT_CSS = """
     ConfigTreeWidget {
         width: 100%;
         height: 1fr;
-        padding: 1 2;
-        overflow-y: auto;
-        scrollbar-size-vertical: 1;
-        scrollbar-color: rgb(51,51,102);
-        scrollbar-color-hover: rgb(90,90,170);
-        scrollbar-color-active: rgb(120,120,255);
-        scrollbar-background: rgb(10,10,20);
-        scrollbar-background-hover: rgb(10,10,20);
-        scrollbar-background-active: rgb(10,10,20);
-    }
-    ConfigTreeWidget > .tree--guides {
-        color: rgb(40,40,80);
+        padding: 0 2;
     }
     """
 
     def __init__(self, config: Dict[str, Any]):
-        super().__init__("📋 Configuration")
+        super().__init__(self._build_text(config))
         self._config = config
-        self._build_tree()
-        self.show_root = True
-        self.show_guides = True
-        self.guide_depth = 4
-        self.auto_expand = True
-        self.root.expand()
 
-    def _build_tree(self) -> None:
-        self.root.remove_children()
-        self._add_node(self.root, self._config, "")
+    @staticmethod
+    def _build_text(config: Dict[str, Any]) -> Text:
+        lines: list[tuple[str, str | Style]] = []
+        ConfigTreeWidget._walk(config, lines, depth=0)
+        text = Text()
+        for i, (content, style) in enumerate(lines):
+            if i > 0:
+                text.append("\n")
+            if isinstance(style, str):
+                text.append(content, style=Style(color=style))
+            else:
+                text.append(content, style=style)
+        return text
 
-    def _add_node(
-        self, parent: TreeNode, data: Any, prefix: str = "", key: str = ""
-    ) -> None:
-        if isinstance(data, dict):
-            for k, v in sorted(data.items()):
-                full_key = f"{prefix}.{k}" if prefix else k
-                if isinstance(v, dict):
-                    node = parent.add(
-                        f"📁 {k}",
-                        data={"kind": "node", "key": k, "full_key": full_key, "value": v},
-                    )
-                    self._add_node(node, v, full_key, k)
-                elif isinstance(v, list):
-                    if v and isinstance(v[0], dict):
-                        label = f"📋 {k} [{len(v)} models]"
-                    else:
-                        items_preview = ", ".join(
-                            str(x)[:20] for x in v[:3]
-                        )
-                        label = f"📋 {k} [{len(v)}]: {items_preview}"
-                    parent.add_leaf(
-                        label,
-                        data={"kind": "list", "key": k, "full_key": full_key, "value": v},
-                    )
+    @staticmethod
+    def _walk(data: Any, lines: list, depth: int = 0) -> None:
+        if not isinstance(data, dict):
+            return
+        indent = "  " * depth
+        for k, v in sorted(data.items()):
+            if isinstance(v, dict):
+                lines.append((f"{indent}▸ {k}", Style(color=ACCENT, bold=True)))
+                ConfigTreeWidget._walk(v, lines, depth + 1)
+            elif isinstance(v, list):
+                if v and isinstance(v[0], dict):
+                    label = f"{indent}  📋 {k} [{len(v)} models]"
                 else:
-                    self._add_leaf_node(parent, k, full_key, v)
-        elif isinstance(data, list):
-            for i, item in enumerate(data):
-                self._add_node(parent, item, f"{prefix}[{i}]", f"[{i}]")
+                    preview = ", ".join(str(x)[:15] for x in v[:3])
+                    label = f"{indent}  📋 {k} [{len(v)}]: {preview}"
+                lines.append((label, FG_SECONDARY))
+            else:
+                ConfigTreeWidget._leaf(lines, indent, k, v)
 
-    def _add_leaf_node(
-        self, parent: TreeNode, key: str, full_key: str, value: Any
-    ) -> None:
+    @staticmethod
+    def _leaf(lines: list, indent: str, key: str, value: Any) -> None:
         if is_sensitive(key):
-            display = f"🔒 {key}: {mask_value(str(value))}"
+            display = f"{indent}  🔒 {key}: {mask_value(str(value))}"
+            color = ERROR
         elif isinstance(value, bool):
             icon = "✅" if value else "❌"
-            display = f"{icon} {key}"
-        elif isinstance(value, (int, float)):
-            display = f"🔢 {key}: {value}"
+            display = f"{indent}  {icon} {key}"
+            color = FG_PRIMARY
+        elif isinstance(value, int):
+            display = f"{indent}  🔢 {key}: {value}"
+            color = SUCCESS
         elif value is None:
-            display = f"○ {key}: null"
+            display = f"{indent}  ○ {key}: null"
+            color = FG_DIM
         else:
-            display = f"📝 {key}: {truncate(str(value), 40)}"
-
-        parent.add_leaf(
-            display,
-            data={"kind": "leaf", "key": key, "full_key": full_key, "value": value},
-        )
+            display = f"{indent}  📝 {key}: {truncate(str(value), 50)}"
+            color = FG_PRIMARY
+        lines.append((display, color))
 
     def rebuild(self, config: Dict[str, Any]) -> None:
         self._config = config
-        self._build_tree()
-        self.root.expand()
+        self.update(self._build_text(config))
