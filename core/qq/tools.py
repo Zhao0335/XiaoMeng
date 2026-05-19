@@ -274,6 +274,50 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_message",
+            "description": (
+                "在任务执行过程中向用户发送一条消息，用于告知进度、请求确认或询问信息。"
+                "如果需要等待用户回复，设置 wait_reply=true，此时任务会暂停，"
+                "收到用户回复后自动继续执行。"
+                "【重要】执行长任务时，先用 send_message 告诉用户「收到，正在处理」，"
+                "然后继续执行工具，最后再用 send_message 发送最终结果。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "要发送给用户的消息内容"
+                    },
+                    "wait_reply": {
+                        "type": "boolean",
+                        "description": "是否等待用户回复后再继续。需要用户确认或提供信息时设为 true"
+                    }
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reload_skills",
+            "description": (
+                "重新加载 skills 目录下的所有技能文件。"
+                "当你用 write_file 写入新 skill（skills/ 目录下的 .md 文件）后，"
+                "必须调用此工具使其立即生效。"
+                "调用后所有新写入或修改的技能文件会被重新扫描加载。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
 ]
 
 # 调用工具时展示给用户看的进度消息（None = 不展示）
@@ -283,12 +327,13 @@ TOOL_PROGRESS_MSG = {
     "run_command":          lambda args: f"（小萌执行命令中：`{args.get('command', '')}` ~）",
     "write_file":           lambda args: f"（小萌写入 {args.get('path') or args.get('file_path', '文件')} ~）",
     "delete_file":          lambda args: f"（小萌删除 {args.get('path') or args.get('file_path', '文件')} ~）",
-    "add_memory":           lambda args: None,
+    "add_memory":           lambda args: "让小萌记下来",
     "search_memory":        lambda args: None,
     "update_soul":          lambda args: None,
     "recall_conversations": lambda args: None,
     "read_file":            lambda args: None,
     "list_files":           lambda args: None,
+    "reload_skills":        lambda args: "（小萌重新加载技能中~）",
 }
 
 
@@ -313,6 +358,7 @@ class QQToolExecutor:
         tts=None,           # SoVITSTTS，send_voice 需要
         target_id: int = 0, # 发送目标（group_id 或 user_id）
         is_private: bool = False,
+        task=None,          # AsyncTask，send_message + wait_reply 需要
     ):
         self._db_path = db_path
         self._soul_path = soul_path
@@ -328,6 +374,7 @@ class QQToolExecutor:
         self._tts = tts
         self._target_id = target_id
         self._is_private = is_private
+        self._task = task
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if tool_name == "web_search":
@@ -389,11 +436,18 @@ class QQToolExecutor:
             return self._delete_file(path)
         elif tool_name == "send_voice":
             return await self._send_voice(arguments.get("text", ""))
+        elif tool_name == "send_message":
+            return await self._send_message(
+                arguments.get("message", ""),
+                arguments.get("wait_reply", False),
+            )
         elif tool_name == "run_command":
             return await self._run_command(
                 arguments.get("command", ""),
                 int(arguments.get("timeout", 30)),
             )
+        elif tool_name == "reload_skills":
+            return self._reload_skills()
         else:
             return f"未知工具: {tool_name}"
 
@@ -690,6 +744,10 @@ class QQToolExecutor:
             else:
                 target.write_text(content, encoding="utf-8")
             logger.info(f"write_file: {path} ({mode}) by {self._sender_qq}")
+            # 如果写入了 skills/ 目录，自动重新加载技能注册中心
+            if path.strip("/").startswith("skills"):
+                self._reload_skills_registry()
+                return f"已写入 {path}（技能已自动加载生效）"
             return f"已写入 {path}"
         except ValueError as e:
             return f"路径错误: {e}"
@@ -741,6 +799,9 @@ class QQToolExecutor:
             else:
                 target.unlink()
             logger.info(f"delete_file: {path} by {self._sender_qq}")
+            if path.strip("/").startswith("skills"):
+                self._reload_skills_registry()
+                return f"已删除 {path}（技能注册已同步更新）"
             return f"已删除 {path}"
         except ValueError as e:
             return f"路径错误: {e}"
@@ -813,82 +874,133 @@ class QQToolExecutor:
 
     # ── workspace 路径解析（防穿越）─────────────────────
 
+    async def _send_message(self, message: str, wait_reply: bool = False) -> str:
+        if not message.strip():
+            return "消息内容不能为空"
+        if not self._napcat:
+            return "send_message: napcat 不可用"
+        try:
+            if self._is_private:
+                await self._napcat.send_private_msg(self._target_id, message)
+            else:
+                await self._napcat.send_group_msg(self._target_id, message)
+        except Exception as e:
+            logger.error(f"send_message 发送失败: {e}")
+            return f"消息发送失败: {e}"
+
+        if wait_reply and self._task is not None:
+            user_reply = await self._task.wait_for_user(f"已发送: {message[:50]}...")
+            if user_reply is None:
+                return "等待用户回复超时"
+            return f"用户回复: {user_reply}"
+        else:
+            return f"已发送消息: {message[:100]}"
+
     def _resolve_workspace_path(self, path: str) -> Path:
         resolved = (self._data_dir / path).resolve()
         if not str(resolved).startswith(str(self._data_dir)):
             raise ValueError(f"路径越界，只能访问 data/ 目录内的文件: {path}")
         return resolved
 
+    def _reload_skills(self) -> str:
+        """重新加载 skills 目录下所有技能文件，使新写入的 skill 立即生效。"""
+        return self._reload_skills_registry()
+
+    @staticmethod
+    def _reload_skills_registry() -> str:
+        try:
+            from .skills import SkillRegistry
+            registry = SkillRegistry.get_instance()
+            count = registry.reload()
+            if count == 0:
+                return "skills 目录下没有找到技能文件（目录可能为空或不存在）"
+            names = ", ".join(s.name for s in registry.list_all())
+            return f"已重新加载 {count} 个技能：{names}"
+        except Exception as e:
+            logger.error(f"reload_skills 失败: {e}")
+            return f"重新加载技能失败: {e}"
+
 
 # ──────────────────────────────────────────────────────────────
-# Skill 加载（OpenClaw SKILL.md 格式）
+# Skill 系统（重构后：基于 SkillRegistry）
 # ──────────────────────────────────────────────────────────────
+
+from .skills import (
+    SkillRegistry, SkillExecutor, SkillContext,
+    ModelTier, UserLevel,
+)
+
+_g_skill_registry_initialized = False
+
+
+def init_skill_registry(skills_dir: str) -> SkillRegistry:
+    """初始化技能注册中心（在 gateway 启动时调用一次）。"""
+    global _g_skill_registry_initialized
+    registry = SkillRegistry.get_instance()
+    if not _g_skill_registry_initialized:
+        registry.init_loader(skills_dir)
+        _g_skill_registry_initialized = True
+    return registry
+
 
 def load_skills_prompt(skills_dir: str) -> str:
     """
-    扫描 data/skills/ 下的技能文件，构建注入 system prompt 的技能段落。
+    [向后兼容] 扫描 data/skills/ 下的技能文件，构建注入 system prompt 的技能段落。
 
-    支持两种布局：
-      - 平铺 .md 文件（推荐）：data/skills/skill-name.md
-      - 子目录格式：data/skills/skill-name/SKILL.md
-
-    frontmatter 可选。有 frontmatter 则提取 name/description 构建索引；
-    无 frontmatter 则用文件名作为 name。每个技能的完整正文都会附上。
+    内部委托给 SkillRegistry + SkillExecutor，保留与旧代码的兼容性。
     """
-    skills_path = Path(skills_dir)
-    if not skills_path.exists():
-        return ""
-
-    skills: List[Tuple[str, str, str]] = []  # (name, desc, body)
-
-    def _collect(md_file: Path) -> None:
-        try:
-            text = md_file.read_text(encoding="utf-8")
-        except Exception:
-            return
-        name, desc, body = _parse_skill(text, md_file.stem)
-        skills.append((name, desc, body))
-
-    for item in sorted(skills_path.iterdir()):
-        if item.is_file() and item.suffix == ".md":
-            _collect(item)
-        elif item.is_dir():
-            skill_md = item / "SKILL.md"
-            if skill_md.exists():
-                _collect(skill_md)
-
+    registry = init_skill_registry(skills_dir)
+    skills = registry.list_enabled()
     if not skills:
         return ""
 
-    index_lines = [f"- **{n}**: {d}" if d else f"- **{n}**" for n, d, _ in skills]
-    body_sections = [f"### {n}\n\n{b}" for n, _, b in skills]
+    index_lines = []
+    body_sections = []
+    for s in skills:
+        emoji = s.emoji or ""
+        label = f"{emoji} **{s.name}**" if emoji else f"- **{s.name}**"
+        if s.description:
+            label += f": {s.description}"
+        index_lines.append(label)
+        if s.body:
+            body_sections.append(f"### {s.name}\n\n{s.body}")
 
-    return (
-        "## 可用技能\n\n"
-        + "\n".join(index_lines)
-        + "\n\n---\n\n"
-        + "\n\n---\n\n".join(body_sections)
-    )
+    parts = ["## 可用技能\n"]
+    if index_lines:
+        parts.append("\n".join(index_lines))
+    if body_sections:
+        parts.append("\n\n---\n\n")
+        parts.append("\n\n---\n\n".join(body_sections))
 
-
-def _parse_skill(text: str, stem: str) -> Tuple[str, str, str]:
-    """解析技能文件，返回 (name, description, body_without_frontmatter)。"""
-    m = re.match(r"^---\n(.*?)\n---\n?", text, re.DOTALL)
-    if not m:
-        return stem, "", text.strip()
-    fm = m.group(1)
-    body = text[m.end():].strip()
-    name_m = re.search(r"^name:\s*(.+)$", fm, re.MULTILINE)
-    desc_m = re.search(r"^description:\s*(.+)$", fm, re.MULTILINE)
-    name = name_m.group(1).strip() if name_m else stem
-    desc = desc_m.group(1).strip() if desc_m else ""
-    return name, desc, body
+    return "\n".join(parts)
 
 
-def _parse_skill_meta(text: str) -> Tuple[str, str]:
-    """从 SKILL.md frontmatter 提取 name 和 description（向后兼容）。"""
-    name, desc, _ = _parse_skill(text, "")
-    return name, desc
+def build_context_skills_prompt(
+    skills_dir: str,
+    model_tier: ModelTier,
+    user_level: UserLevel,
+    identity: str = "",
+) -> str:
+    """上下文感知的技能 prompt：根据模型层级和用户权限过滤技能。"""
+    registry = init_skill_registry(skills_dir)
+    skills = registry.get_for_context(model_tier, user_level, identity)
+    if not skills:
+        return ""
+
+    ctx = SkillContext(model_tier=model_tier, user_level=user_level, identity=identity)
+    executor = SkillExecutor()
+    return executor.build_active_prompt(skills, ctx)
+
+
+def get_tool_schemas_for_context(
+    base_tools: list,
+    model_tier: ModelTier,
+    user_level: UserLevel,
+    identity: str = "",
+) -> list:
+    """获取当前上下文可用的工具 schema 列表（含 SkillRegistry 注册的动态工具）。"""
+    from .skills import ToolSchemaBuilder
+    return ToolSchemaBuilder.from_tools(base_tools, model_tier, user_level, identity)
 
 
 # ──────────────────────────────────────────────────────────────

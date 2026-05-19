@@ -1,109 +1,122 @@
 {
-  "_comment": "复制此文件为 qq_config.json 并填写配置",
+    "_comment": "复制此文件为 qq_config.json 并填写配置",
 
-  "owner_qq": 0,
-  "bot_qq": 0,
-  "bot_name": "小萌",
-  "data_dir": "./data",
-  "persona_path": "./data/persona/SOUL.md",
+    "owner_qq": 0,
+    "bot_qq": 0,
+    "bot_name": "小萌",
+    "data_dir": "./data",
+    "persona_path": "./data/persona/SOUL.md",
 
-  "napcat_ws_url": "ws://127.0.0.1:3001",
-  "napcat_token": "",
+    "napcat_ws_url": "ws://127.0.0.1:3001",
+    "napcat_token": "",
 
-  "quiet_hours": {
-    "start": 1,
-    "end": 8
-  },
-
-  "group_response_prob": 0.08,
-  "typing_ms_per_char": 30,
-  "typing_max_ms": 4000,
-
-  "proactive_interval": {
-    "min": 300,
-    "max": 900
-  },
-  "proactive_min_messages": 3,
-
-  "memory": {
-    "compress_every": 20,
-    "short_term_keep": 10
-  },
-
-  "web_search_proxy": "",
-
-  "cloud_trigger": {
-    "min_chars": 200,
-    "keywords": ["分析", "代码", "总结", "推理", "数学", "写一篇", "帮我写"]
-  },
-
-  "pro_trigger_keywords": [
-    "认真", "写代码", "管理服务器", "帮我写代码", "写个脚本",
-    "调试", "部署", "架构", "详细方案", "系统设计", "完整实现"
-  ],
-
-  "models": [
-    {
-      "_comment": "路由模型 - 判断 LOCAL/CLOUD，轻量快速",
-      "model_id": "qwen-router",
-      "layer": "basic",
-      "role": "router",
-      "model_name": "qwen2.5:14b",
-      "endpoint": "http://localhost:11434",
-      "api_key": "",
-      "max_tokens": 20,
-      "temperature": 0.0,
-      "num_ctx": 8192,
-      "enabled": true,
-      "priority": 0
+    "quiet_hours": {
+        "start": 1,
+        "end": 8
     },
-    {
-      "_comment": "本地聊天模型 - 日常对话（Basic 层）",
-      "model_id": "qwen-local",
-      "layer": "basic",
-      "role": "chat",
-      "model_name": "qwen2.5:14b",
-      "endpoint": "http://localhost:11434",
-      "api_key": "",
-      "max_tokens": 8192,
-      "temperature": 0.85,
-      "num_ctx": 32768,
-      "enabled": true,
-      "priority": 1
+
+    "group_response_prob": 0.08,
+    "typing_ms_per_char": 30,
+    "typing_max_ms": 4000,
+
+    "proactive_interval": {
+        "min": 300,
+        "max": 900
     },
-    {
-      "_comment": "云端推理模型 - 复杂任务（Brain 层）",
-      "model_id": "deepseek-cloud",
-      "layer": "brain",
-      "role": "reasoning",
-      "model_name": "deepseek-v4-flash",
-      "endpoint": "https://api.deepseek.com/v1",
-      "api_key": "你的_DEEPSEEK_API_KEY",
-      "proxy": "",
-      "max_tokens": 32768,
-      "temperature": 0.7,
-      "enabled": true,
-      "priority": 1
+    "proactive_min_messages": 3,
+
+    "memory": {
+        "compress_every": 20,
+        "short_term_keep": 10
     },
-    {
-      "_comment": "高端模型 - 超复杂任务，关键词触发（Pro 层）",
-      "model_id": "deepseek-pro",
-      "layer": "pro",
-      "role": "reasoning",
-      "model_name": "deepseek-v4-pro",
-      "endpoint": "https://api.deepseek.com/v1",
-      "api_key": "你的_DEEPSEEK_API_KEY",
-      "proxy": "",
-      "max_tokens": 65536,
-      "temperature": 0.6,
-      "enabled": false,
-      "priority": 1
+
+    "web_search_proxy": "",
+
+    "cloud_trigger": {
+        "min_chars": 200,
+        "keywords": ["分析", "代码", "总结", "推理", "数学", "写一篇", "帮我写"]
+    },
+
+    "pro_trigger_keywords": [
+        "认真",
+        "写代码",
+        "管理服务器",
+        "帮我写代码",
+        "写个脚本",
+        "调试",
+        "部署",
+        "架构",
+        "详细方案",
+        "系统设计",
+        "完整实现"
+    ],
+
+    "models": [
+        {
+            "_comment": "路由模型 - 判断 LOCAL/CLOUD，轻量快速",
+            "model_id": "qwen-router",
+            "layer": "basic",
+            "role": "router",
+            "provider": "ollama",
+            "model_name": "qwen2.5:14b",
+            "endpoint": "http://localhost:11434",
+            "api_key": "",
+            "max_tokens": 20,
+            "temperature": 0.0,
+            "num_ctx": 8192,
+            "enabled": true,
+            "priority": 0
+        },
+        {
+            "_comment": "本地聊天模型 - 日常对话（Basic 层）",
+            "model_id": "qwen-local",
+            "layer": "basic",
+            "role": "chat",
+            "provider": "ollama",
+            "model_name": "qwen2.5:14b",
+            "endpoint": "http://localhost:11434",
+            "api_key": "",
+            "max_tokens": 8192,
+            "temperature": 0.85,
+            "num_ctx": 32768,
+            "enabled": true,
+            "priority": 1
+        },
+        {
+            "_comment": "云端推理模型 - 复杂任务（Brain 层）",
+            "model_id": "deepseek-cloud",
+            "layer": "brain",
+            "role": "reasoning",
+            "provider": "openai",
+            "model_name": "deepseek-v4-flash",
+            "endpoint": "https://api.deepseek.com/v1",
+            "api_key": "你的_DEEPSEEK_API_KEY",
+            "proxy": "",
+            "max_tokens": 32768,
+            "temperature": 0.7,
+            "enabled": true,
+            "priority": 1
+        },
+        {
+            "_comment": "高端模型 - 超复杂任务，关键词触发（Pro 层）",
+            "model_id": "deepseek-pro",
+            "layer": "pro",
+            "role": "reasoning",
+            "provider": "openai",
+            "model_name": "deepseek-v4-pro",
+            "endpoint": "https://api.deepseek.com/v1",
+            "api_key": "你的_DEEPSEEK_API_KEY",
+            "proxy": "",
+            "max_tokens": 65536,
+            "temperature": 0.6,
+            "enabled": false,
+            "priority": 1
+        }
+    ],
+
+    "live2d": {
+        "_comment": "Live2D 后端配置（run_live2d.py）",
+        "tts_voice": "zh-CN-XiaoxiaoNeural",
+        "port": 8765
     }
-  ],
-
-  "live2d": {
-    "_comment": "Live2D 后端配置（run_live2d.py）",
-    "tts_voice": "zh-CN-XiaoxiaoNeural",
-    "port": 8765
-  }
 }

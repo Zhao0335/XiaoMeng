@@ -1,0 +1,30 @@
+{
+    "enabled": true,
+    "backend": {
+        "url": "http://127.0.0.1:5522",
+        "timeout": 30.0,
+        "retry_count": 3,
+        "retry_delay": 1.0
+    },
+    "security": {
+        "password_hash_algorithm": "bcrypt",
+        "session_ttl_days": 30,
+        "max_login_attempts": 5,
+        "lockout_duration_minutes": 30
+    },
+    "accounts": {},
+    "default_account": null,
+    "_comment": {
+        "enabled": "是否启用插件",
+        "backend.url": "calendar_backend 服务地址",
+        "backend.timeout": "请求超时时间（秒）",
+        "backend.retry_count": "请求重试次数",
+        "backend.retry_delay": "重试间隔（秒）",
+        "security.password_hash_algorithm": "密码哈希算法（bcrypt/sha256）",
+        "security.session_ttl_days": "会话有效期（天）",
+        "security.max_login_attempts": "最大登录尝试次数",
+        "security.lockout_duration_minutes": "锁定时长（分钟）",
+        "accounts": "已保存的账号（自动管理）",
+        "default_account": "默认账号名称"
+    }
+}

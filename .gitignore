@@ -19,6 +19,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Virtual Environment
 venv/
@@ -26,12 +28,28 @@ ENV/
 env/
 .venv/
 
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+
+# Node.js (for any web frontend components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+package-lock.json
+yarn.lock
 
 # 测试生成的文件
 hello.txt
@@ -121,6 +139,8 @@ data/config.json
 data/qq_bot.db
 data/qq_bot.db-shm
 data/qq_bot.db-wal
+data/qq_bot.db-journal
+*.db-journal
 
 # ── 用户隐私数据（真实 QQ 号、权限等）────────────
 data/qq_admins.json
@@ -149,3 +169,28 @@ data/notes/
 
 # ── 未来愿望清单（不公开）────────────────────────
 WISH.md
+
+# ── 插件运行时数据 ────────────────────────────────
+plugins/*/data/
+plugins/*/cache/
+plugins/*/*.db
+plugins/*/credentials/
+plugins/*/tokens/
+
+# ── Poetry / Pipenv ───────────────────────────────
+Pipfile.lock
+poetry.lock
+.python-version
+
+# ── 敏感配置文件 ─────────────────────────────────
+secrets.yaml
+secrets.yml
+secrets.json
+*.secret.*
+*_secret.*
+credentials.json
+token.json
+
+# ── 教程目录（单独上传）──────────────────────────
+Tutorial/
+Tutorial_GitHub/

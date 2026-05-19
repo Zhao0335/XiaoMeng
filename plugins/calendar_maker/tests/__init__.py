@@ -1,0 +1,3 @@
+"""
+Calendar Maker Plugin Tests
+"""

@@ -109,17 +109,21 @@ class _SoVITSProvider(TTSProvider):
     """GPT-SoVITS API TTS，使用参考音频克隆音色。"""
     def __init__(
         self,
-        api_url: str = "http://127.0.0.1:9881",
-        ref_audio: str = "/home/qwq/zcx_ai_group_friend/ref_voice.wav",
-        ref_text: str = "少爷 该起床了 少爷",
+        api_url: str = "http://127.0.0.1:9882",
+        ref_audio: str = "",
+        ref_text: str = "",
         ref_lang: str = "zh",
         text_lang: str = "zh",
+        text_split_method: str = "cut0",
+        request_timeout: float = 60,
     ):
         self._api_url = api_url.rstrip("/")
         self._ref_audio = ref_audio
         self._ref_text = ref_text
         self._ref_lang = ref_lang
         self._text_lang = text_lang
+        self._text_split_method = text_split_method
+        self._request_timeout = request_timeout
 
     async def synthesize(self, text: str, **_) -> TTSResult:
         import httpx
@@ -129,12 +133,12 @@ class _SoVITSProvider(TTSProvider):
             "ref_audio_path": self._ref_audio,
             "prompt_text": self._ref_text,
             "prompt_lang": self._ref_lang,
-            "text_split_method": "cut5",
+            "text_split_method": self._text_split_method,
             "batch_size": 1,
             "speed_factor": 1.0,
             "streaming_mode": False,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=self._request_timeout) as client:
             resp = await client.post(f"{self._api_url}/tts", json=payload)
             resp.raise_for_status()
         return TTSResult(audio_bytes=resp.content, mime="audio/wav")
@@ -173,9 +177,17 @@ class _SilentTTS(TTSProvider):
 
 async def _try_build_tts() -> TTSProvider:
     """依次尝试 GPT-SoVITS → gTTS → 静音兜底。"""
-    # 优先用 GPT-SoVITS（本地，音色克隆）
+    tts_cfg = _cfg.get("tts", {})
     try:
-        tts = _SoVITSProvider()
+        tts = _SoVITSProvider(
+            api_url=tts_cfg.get("api_url", "http://127.0.0.1:9882"),
+            ref_audio=tts_cfg.get("ref_audio", ""),
+            ref_text=tts_cfg.get("ref_text", ""),
+            ref_lang=tts_cfg.get("ref_lang", "zh"),
+            text_lang=tts_cfg.get("text_lang", "zh"),
+            text_split_method=tts_cfg.get("text_split_method", "cut0"),
+            request_timeout=tts_cfg.get("request_timeout", 60),
+        )
         await asyncio.wait_for(tts.synthesize("你好"), timeout=30)
         logger.info("GPT-SoVITS 可用，使用本地 TTS")
         return tts
@@ -197,6 +209,10 @@ _tts: TTSProvider = _SilentTTS()  # lifespan 里会尝试替换成 EdgeTTS
 _napcat = NapCatClient(
     ws_url=_cfg.get("napcat_ws_url", "ws://127.0.0.1:3001"),
     access_token=_cfg.get("napcat_token", ""),
+    reconnect_interval=_cfg.get("napcat_reconnect_interval", 5.0),
+    api_timeout=_cfg.get("napcat_api_timeout", 15.0),
+    ping_interval=_cfg.get("napcat_ping_interval", 20),
+    ping_timeout=_cfg.get("napcat_ping_timeout", 20),
 )
 
 def _build_system_prompt() -> str:
@@ -362,7 +378,7 @@ async def _ws_endpoint(websocket: WebSocket):
         sink=_sink,
         config=PipelineConfig(
             system_prompt=_system_prompt,
-            history_max_turns=20,
+            history_max_turns=_live2d_cfg.get("history_max_turns", 20),
         ),
     )
 

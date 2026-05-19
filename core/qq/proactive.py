@@ -57,13 +57,16 @@ class GroupProactiveAgent:
         router: "ModelLayerRouter",
         napcat: "NapCatClient",
         bot_name: str = "小萌",
-        min_interval: int = 300,    # 最短间隔秒数
-        max_interval: int = 900,    # 最长间隔秒数
-        min_new_msgs: int = 3,      # 触发所需的最少新消息数
-        quiet_start: int = 1,       # 安静时段开始（小时，24h）
-        quiet_end: int = 8,         # 安静时段结束（小时，24h）
-        cooldown_secs: int = 60,    # bot 发言后的最短冷却
-        soul_path: str = "",        # SOUL.md 路径，用于传人设给 LLM
+        min_interval: int = 300,
+        max_interval: int = 900,
+        min_new_msgs: int = 3,
+        quiet_start: int = 1,
+        quiet_end: int = 8,
+        cooldown_secs: int = 60,
+        soul_path: str = "",
+        llm_max_tokens: int = 200,
+        llm_temperature: float = 0.9,
+        recent_messages_limit: int = 20,
     ):
         self._group_id = group_id
         self._db_path = db_path
@@ -77,6 +80,9 @@ class GroupProactiveAgent:
         self._quiet_end = quiet_end
         self._cooldown_secs = cooldown_secs
         self._soul_path = soul_path
+        self._llm_max_tokens = llm_max_tokens
+        self._llm_temperature = llm_temperature
+        self._recent_messages_limit = recent_messages_limit
         self._last_spoke_at: Optional[datetime] = None
         self._task: Optional[asyncio.Task] = None
 
@@ -117,7 +123,7 @@ class GroupProactiveAgent:
 
         # 3. 获取近期群消息
         session_key = f"group:{self._group_id}"
-        recent = self._get_recent_messages(session_key, limit=20)
+        recent = self._get_recent_messages(session_key, limit=self._recent_messages_limit)
         if not recent:
             return
 
@@ -146,8 +152,8 @@ class GroupProactiveAgent:
             response = await adapter.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system_prompt=soul_text,
-                max_tokens=200,
-                temperature=0.9,
+                max_tokens=self._llm_max_tokens,
+                temperature=self._llm_temperature,
             )
             content = response.content.strip()
         except Exception as e:
@@ -299,7 +305,11 @@ class ProactiveManager:
                 min_new_msgs=self._config.get("proactive_min_messages", 3),
                 quiet_start=self._config.get("quiet_hours", {}).get("start", 1),
                 quiet_end=self._config.get("quiet_hours", {}).get("end", 8),
+                cooldown_secs=self._config.get("proactive", {}).get("cooldown_secs", 60),
                 soul_path=self._soul_path,
+                llm_max_tokens=self._config.get("proactive", {}).get("llm_max_tokens", 200),
+                llm_temperature=self._config.get("proactive", {}).get("llm_temperature", 0.9),
+                recent_messages_limit=self._config.get("proactive", {}).get("recent_messages_limit", 20),
             )
             self._agents[group_id] = agent
             agent.start()

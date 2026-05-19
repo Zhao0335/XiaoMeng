@@ -26,10 +26,16 @@ class NapCatClient:
         ws_url: str = "ws://127.0.0.1:3001",
         access_token: str = "",
         reconnect_interval: float = 5.0,
+        api_timeout: float = 15.0,
+        ping_interval: float = 20,
+        ping_timeout: float = 20,
     ):
         self._url = ws_url
         self._token = access_token
         self._reconnect_interval = reconnect_interval
+        self._api_timeout = api_timeout
+        self._ping_interval = ping_interval
+        self._ping_timeout = ping_timeout
         self._ws = None
         self._pending: Dict[str, asyncio.Future] = {}
         self._event_handlers: list[Callable] = []
@@ -62,8 +68,10 @@ class NapCatClient:
             await self._ws.close()
 
     async def call_api(
-        self, action: str, params: Dict[str, Any] = None, timeout: float = 15.0
+        self, action: str, params: Dict[str, Any] = None, timeout: float = None
     ) -> Dict[str, Any]:
+        if timeout is None:
+            timeout = self._api_timeout
         """调用 OneBot API，等待响应"""
         if self._ws is None:
             raise RuntimeError("WebSocket 未连接")
@@ -145,7 +153,7 @@ class NapCatClient:
 
         logger.info(f"连接 NapCat: {self._url}")
         async with websockets.connect(
-            self._url, extra_headers=headers, ping_interval=20, ping_timeout=20
+            self._url, extra_headers=headers, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout
         ) as ws:
             self._ws = ws
             logger.info("NapCat 已连接")

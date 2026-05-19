@@ -83,6 +83,25 @@
 
 在 `data/skills/` 下放 `.md` 文件，bot 启动时自动加载作为 system prompt 的一部分。bot 也可以在运行时自己写新 skill。
 
+**新版技能系统特性**（v3.0+）：
+- **Registry-based dispatch**：统一注册→发现→过滤→执行管道
+- **风险分级**：READ_ONLY / SENSITIVE / DANGEROUS 三层风险
+- **模型感知路由**：本地14b / Cloud DeepSeek / Pro 三级模型过滤
+- **身份权限控制**：基于身份（非QQ号）的权限，OWNER/ADMIN/STRANGER
+
+### 插件系统
+
+小萌支持动态加载插件，扩展功能能力。
+
+**内置插件**：
+- **Calendar Maker**：日历管理插件，支持通过 QQ 管理 calendar_backend 系统的日程
+  - 向 calendar_backend 添加日程安排
+  - 通过 QQ 验证账号名和密码信息
+  - 支持账号切换（需密码验证）
+  - 支持 QQ 号与 calendar 账号绑定
+
+插件位于 `plugins/` 目录，每个插件独立管理其工具、命令和配置。
+
 ---
 
 ## 快速开始
@@ -105,6 +124,13 @@ vi data/qq_config.json
 
 # 5. 启动 QQ Bot
 python run_qq.py
+```
+
+### 使用初始化脚本（推荐）
+
+```bash
+# 使用 init.sh 一键初始化
+./init.sh
 ```
 
 ---
@@ -224,6 +250,35 @@ uvicorn run_live2d:app --host 0.0.0.0 --port 8765
 3. 前端发 `{"type": "verify_code", "qq": 12345678, "code": "XXXXXX"}`
 4. 验证通过后开始对话
 
+### SoVITS TTS 支持
+
+小萌支持 SoVITS 语音合成系统，提供更自然的语音输出：
+
+```bash
+# 启动 SoVITS TTS 服务
+./start_sovits.sh
+```
+
+---
+
+## TUI 终端界面（可选）
+
+小萌提供现代化的终端用户界面（TUI），基于 Textual 框架构建：
+
+```bash
+# 启动 TUI 界面
+python TUI_v2.py
+# 或
+python -m tui
+```
+
+TUI 功能：
+- 实时聊天视图
+- 配置树形编辑
+- 状态监控面板
+- 帮助系统
+- 可爱吉祥物显示
+
 ---
 
 ## 项目结构
@@ -232,7 +287,10 @@ uvicorn run_live2d:app --host 0.0.0.0 --port 8765
 XiaoMeng/
 ├── run_qq.py              # QQ Bot 启动入口
 ├── run_live2d.py          # Live2D 后端启动入口（uvicorn）
+├── TUI_v2.py              # TUI 终端界面启动入口
 ├── setup.py               # 初始化脚本（首次运行）
+├── init.sh                # 一键初始化脚本
+├── start_sovits.sh        # SoVITS TTS 启动脚本
 ├── requirements.txt
 │
 ├── core/
@@ -243,12 +301,54 @@ XiaoMeng/
 │   │   ├── tools.py       # 工具执行器
 │   │   ├── commands.py    # 管理命令解析
 │   │   ├── permissions.py # 权限管理
-│   │   └── proactive.py   # 主动发言
+│   │   ├── proactive.py   # 主动发言
+│   │   ├── tts.py         # TTS 语音合成
+│   │   ├── async_task.py  # 异步任务处理
+│   │   └── skills/        # 技能系统
+│   │       ├── registry.py    # 技能注册中心
+│   │       ├── definition.py  # 技能定义
+│   │       ├── executor.py    # 技能执行器
+│   │       ├── loader.py      # 技能加载器
+│   │       ├── permissions.py # 技能权限检查
+│   │       └── schema.py      # 工具模式构建
 │   ├── model_layer.py     # 多模型路由（Basic/Brain/Pro 层）
-│   └── live2d_provider.py # Live2D LLM 适配器
+│   ├── live2d_provider.py # Live2D LLM 适配器
+│   └── plugins/           # 插件系统核心
+│       ├── base.py        # 插件基类
+│       ├── loader.py      # 插件加载器
+│       └── manager.py     # 插件管理器
 │
 ├── models/
 │   └── core.py            # 核心数据模型（用户、消息、情感等）
+│
+├── plugins/               # 插件目录
+│   └── calendar_maker/    # 日历管理插件
+│       ├── plugin.py      # 插件主入口
+│       ├── tools.py       # 日历工具定义
+│       ├── commands.py    # 日历命令解析
+│       ├── auth.py        # 认证模块
+│       ├── calendar_client.py # 日历 API 客户端
+│       ├── account_manager.py # 账号管理
+│       ├── binding_manager.py # QQ-账号绑定管理
+│       └── config.py      # 插件配置
+│
+├── tui/                   # TUI 终端界面
+│   ├── app.py             # TUI 应用主入口
+│   ├── theme.py           # 主题配置
+│   ├── events.py          # 事件定义
+│   ├── screens/           # 屏幕模块
+│   │   ├── main.py        # 主屏幕
+│   │   └── splash.py      # 启动画面
+│   ├── widgets/           # UI 组件
+│   │   ├── chat_view.py   # 聊天视图
+│   │   ├── config_tree.py # 配置树
+│   │   ├── status_view.py # 状态视图
+│   │   ├── help_view.py   # 帮助视图
+│   │   └── mascot.py      # 吉祥物组件
+│   ├── services/          # 服务层
+│   │   └── engine.py      # 引擎服务
+│   └── utils/             # 工具函数
+│       └── config.py      # 配置工具
 │
 └── data/                  # 运行时数据（git ignored，用 setup.py 初始化）
     ├── qq_config.json      # 配置（含API Key，不上传）
@@ -285,6 +385,7 @@ chromadb>=0.4.0
 aiofiles>=23.0.0
 requests>=2.31.0
 python-multipart>=0.0.6
+textual>=0.40.0
 ```
 
 本地模型需要 [Ollama](https://ollama.com)，云端使用 DeepSeek API（或任何兼容 OpenAI 格式的接口）。
