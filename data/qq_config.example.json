@@ -51,6 +51,12 @@
         "完整实现"
     ],
 
+    "async_task": {
+        "_comment": "异步任务池配置：max_concurrent=最大并发数，user_event_timeout=等待用户输入超时秒数",
+        "max_concurrent": 3,
+        "user_event_timeout": 600
+    },
+
     "models": [
         {
             "_comment": "路由模型 - 判断 LOCAL/CLOUD，轻量快速",

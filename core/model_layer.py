@@ -9,6 +9,7 @@ Special: 专业模型API，用于特定领域任务（代码、视觉、语音�
 
 import asyncio
 import json
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -193,19 +194,31 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
 
-            proxy = self.endpoint.proxy or None
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self.endpoint.endpoint}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                    proxy=proxy,
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise Exception(f"API error: {response.status} - {error_text}")
+            _proxy_raw = self.endpoint.proxy
+            _no_proxy = _proxy_raw == ""
+            _proxy = None if _no_proxy else (_proxy_raw or None)
+            _saved_env = {}
+            if _no_proxy:
+                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                    _saved_env[k] = os.environ.pop(k, None)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        f"{self.endpoint.endpoint}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        proxy=_proxy,
+                    ) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            raise Exception(f"API error: {response.status} - {error_text}")
 
-                    data = await response.json()
+                        data = await response.json()
+            finally:
+                if _saved_env:
+                    for k, v in _saved_env.items():
+                        if v is not None:
+                            os.environ[k] = v
 
             choice = data["choices"][0]
             msg = choice["message"]
@@ -264,29 +277,41 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
                 headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
-            proxy = self.endpoint.proxy or None
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self.endpoint.endpoint}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                    proxy=proxy,
-                ) as response:
-                    async for line in response.content:
-                        line = line.decode("utf-8").strip()
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                if "choices" in data and data["choices"]:
-                                    delta = data["choices"][0].get("delta", {})
-                                    if "content" in delta:
-                                        yield delta["content"]
-                            except:
-                                continue
+            _proxy_raw = self.endpoint.proxy
+            _no_proxy = _proxy_raw == ""
+            _proxy = None if _no_proxy else (_proxy_raw or None)
+            _saved_env = {}
+            if _no_proxy:
+                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                    _saved_env[k] = os.environ.pop(k, None)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        f"{self.endpoint.endpoint}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        proxy=_proxy,
+                    ) as response:
+                        async for line in response.content:
+                            line = line.decode("utf-8").strip()
+                            if line.startswith("data: "):
+                                data_str = line[6:]
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data = json.loads(data_str)
+                                    if "choices" in data and data["choices"]:
+                                        delta = data["choices"][0].get("delta", {})
+                                        if "content" in delta:
+                                            yield delta["content"]
+                                except:
+                                    continue
+            finally:
+                if _saved_env:
+                    for k, v in _saved_env.items():
+                        if v is not None:
+                            os.environ[k] = v
         finally:
             self._busy = False
 
@@ -419,17 +444,30 @@ class OllamaAdapter(BaseModelAdapter):
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self.endpoint.endpoint}/api/chat", json=payload
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise Exception(
-                            f"Ollama error: {response.status} - {error_text}"
-                        )
+            _proxy_raw = self.endpoint.proxy
+            _no_proxy = _proxy_raw == ""
+            _proxy = None if _no_proxy else (_proxy_raw or None)
+            _saved_env = {}
+            if _no_proxy:
+                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                    _saved_env[k] = os.environ.pop(k, None)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        f"{self.endpoint.endpoint}/api/chat", json=payload, proxy=_proxy
+                    ) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            raise Exception(
+                                f"Ollama error: {response.status} - {error_text}"
+                            )
 
-                    data = await response.json()
+                        data = await response.json()
+            finally:
+                if _saved_env:
+                    for k, v in _saved_env.items():
+                        if v is not None:
+                            os.environ[k] = v
 
             msg = data["message"]
             content = msg.get("content") or ""
@@ -504,17 +542,30 @@ class OllamaAdapter(BaseModelAdapter):
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self.endpoint.endpoint}/api/chat", json=payload
-                ) as response:
-                    async for line in response.content:
-                        try:
-                            data = json.loads(line)
-                            if "message" in data and "content" in data["message"]:
-                                yield data["message"]["content"]
-                        except:
-                            continue
+            _proxy_raw = self.endpoint.proxy
+            _no_proxy = _proxy_raw == ""
+            _proxy = None if _no_proxy else (_proxy_raw or None)
+            _saved_env = {}
+            if _no_proxy:
+                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                    _saved_env[k] = os.environ.pop(k, None)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        f"{self.endpoint.endpoint}/api/chat", json=payload, proxy=_proxy
+                    ) as response:
+                        async for line in response.content:
+                            try:
+                                data = json.loads(line)
+                                if "message" in data and "content" in data["message"]:
+                                    yield data["message"]["content"]
+                            except:
+                                continue
+            finally:
+                if _saved_env:
+                    for k, v in _saved_env.items():
+                        if v is not None:
+                            os.environ[k] = v
         finally:
             self._busy = False
 

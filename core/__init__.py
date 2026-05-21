@@ -16,6 +16,8 @@ from .qq.commands import QQCommandParser
 from .qq.permissions import PermLevel, QQPermissionManager
 from .qq.proactive import ProactiveManager
 from .qq.tools import TOOL_SCHEMAS, QQToolExecutor
+from .react import ReActConfig, ReActLoop
+from .tasks import AsyncTask, TaskPool, TaskStatus
 
 __all__ = [
     "ModelLayerRouter",
@@ -29,4 +31,9 @@ __all__ = [
     "ProactiveManager",
     "QQToolExecutor",
     "TOOL_SCHEMAS",
+    "TaskPool",
+    "AsyncTask",
+    "TaskStatus",
+    "ReActLoop",
+    "ReActConfig",
 ]

@@ -48,9 +48,10 @@ TOOL_SCHEMAS = [
             "name": "add_memory",
             "description": (
                 "记住某件重要的事情。"
-                "scope=\"person\"（默认）：记录关于这个人的信息（姓名/喜好/职业/重要事件），下次见到他/她时能想起来，跨聊天窗口有效。"
-                "scope=\"conversation\"：记录关于当前对话主题的信息，仅在本聊天窗口有效。"
-                "scope=\"knowledge\"：记录通用知识/世界知识，如动漫设定、乐队成员介绍、歌手背景等，所有对话都能用到。"
+                "scope=\"person\"（默认）：记录关于**这个人**的信息（姓名/喜好/职业/重要事件），下次见到他/她时能想起来。"
+                "scope=\"global\"：记录关于**小萌自身**的规则、设定、主人的要求等，所有对话都生效。如：称呼规则、行为准则、主人指定的偏好。"
+                "scope=\"knowledge\"：记录关于**外部世界**的知识，如动漫设定、乐队成员、历史事件、技术概念等。"
+                "scope=\"conversation\"：记录关于**当前对话主题**的信息，仅在本聊天窗口有效。"
                 "【重要】对方一旦透露了个人信息（哪怕只是名字、年级、喜好），立即用 scope=\"person\" 记下来！"
             ),
             "parameters": {
@@ -58,12 +59,16 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "【必填，字段名必须是 content】要记住的内容，用一句话描述清楚，包含主语（如「用户叫小明，大学生」）"
+                        "description": "【必填，字段名必须是 content】要记住的内容，用一句话描述清楚。必须包含：谁说/在哪看到 + 关于谁 + 说了什么。如「A说B喜欢编程」「B自称叫B」「网上查到 Ave Mujica 成员有…」"
+                    },
+                    "about": {
+                        "type": "string",
+                        "description": "scope=\"person\" 时指定这条记忆是关于谁的。取值为 system prompt 已知人物列表中列出的 identity。不填则默认为当前对话对象。"
                     },
                     "scope": {
                         "type": "string",
-                        "description": "person = 关于这个人（跨对话生效）；conversation = 关于当前对话；knowledge = 通用知识/世界知识（跨所有对话生效，如动漫设定、歌手信息等）",
-                        "enum": ["person", "conversation", "knowledge"]
+                        "description": "person=关于这个人；global=关于小萌自身的规则/主人的要求；knowledge=关于外部世界的知识；conversation=关于当前对话",
+                        "enum": ["person", "global", "knowledge", "conversation"]
                     },
                     "importance": {
                         "type": "integer",
@@ -364,6 +369,7 @@ class QQToolExecutor:
         self._soul_path = soul_path
         self._data_dir = data_dir.resolve()
         self._memory_dir = data_dir / "memory"
+        self._memory_md_path = soul_path.parent / "MEMORY.md"
         self._session_key = session_key
         self._sender_qq = sender_qq
         self._level = level
@@ -392,9 +398,10 @@ class QQToolExecutor:
             if not content and arguments.get("key") and arguments.get("value"):
                 content = f"{arguments['key']}: {arguments['value']}"
             scope = arguments.get("scope", "person")
-            if scope not in ("person", "conversation", "knowledge"):
+            if scope not in ("person", "conversation", "knowledge", "global"):
                 scope = "person"
-            return self._add_memory(content, int(arguments.get("importance", 1)), scope)
+            about = arguments.get("about") or ""
+            return self._add_memory(content, int(arguments.get("importance", 1)), scope, about)
         elif tool_name == "search_memory":
             return self._search_memory(arguments.get("query", ""))
         elif tool_name == "update_soul":
@@ -475,12 +482,32 @@ class QQToolExecutor:
 
     # ── add_memory ───────────────────────────────────
 
-    def _add_memory(self, content: str, importance: int = 1, scope: str = "person") -> str:
+    def _add_memory(self, content: str, importance: int = 1, scope: str = "person", about: str = "") -> str:
         if not content.strip():
             return "内容不能为空"
         content = content.strip()
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d")
+
+        if scope == "global":
+            try:
+                if not self._memory_md_path.exists():
+                    self._memory_md_path.write_text("# 小萌的重要记忆\n\n", encoding="utf-8")
+                with open(self._memory_md_path, "a", encoding="utf-8") as f:
+                    f.write(f"- [{ts}] {content}\n")
+            except Exception as e:
+                return f"全局记忆写入失败: {e}"
+            try:
+                conn = sqlite3.connect(self._db_path)
+                conn.execute(
+                    "INSERT INTO long_term_memory (session_key, content, memory_type, importance, created_at) VALUES (?, ?, 'global', ?, ?)",
+                    ("global", content, importance, now.isoformat()),
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+            return f"记住了（全局）：{content}"
 
         if scope == "knowledge":
             # 通用知识：写 data/memory/knowledge.md + SQLite key=knowledge
@@ -505,19 +532,20 @@ class QQToolExecutor:
             return f"记住了（知识库）：{content}"
 
         elif scope == "person" and self._sender_qq:
-            # 写到 data/memory/{identity}.md（对人的记忆，跨对话持久）
+            target_identity = about or self._identity
             try:
-                mem_file = self._memory_dir / f"{self._identity}.md"
+                mem_file = self._memory_dir / f"{target_identity}.md"
                 line = f"- [{ts}] {content}\n"
                 with open(mem_file, "a", encoding="utf-8") as f:
                     f.write(line)
             except Exception as e:
                 return f"记忆写入文件失败: {e}"
             try:
+                user_key = f"user:{self._sender_qq}"
                 conn = sqlite3.connect(self._db_path)
                 conn.execute(
                     "INSERT INTO long_term_memory (session_key, content, memory_type, importance, created_at) VALUES (?, ?, 'person', ?, ?)",
-                    (self._user_key, content, importance, now.isoformat()),
+                    (user_key, content, importance, now.isoformat()),
                 )
                 conn.commit()
                 conn.close()

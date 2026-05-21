@@ -22,7 +22,8 @@ from ..model_layer import (
     ModelProvider,
     ModelRole,
 )
-from .async_task import AsyncTask, AsyncTaskManager, TaskStatus
+from ..react import ReActConfig, ReActLoop
+from ..tasks import AsyncTask, TaskPool, TaskStatus
 from .commands import QQCommandParser
 from .napcat import NapCatClient
 from .onebot_events import (
@@ -263,13 +264,14 @@ class QQGateway:
         # 初始化 SkillRegistry（启动时加载所有技能文件）
         init_skill_registry(self._skills_dir)
 
-        # 异步任务管理器
-        self._task_manager = AsyncTaskManager(
+        # 异步任务池（支持并发）
+        self._task_manager = TaskPool(
             db_path=self._db_path,
             send_message=self._send_task_progress,
             user_event_timeout=config.get("async_task", {}).get(
                 "user_event_timeout", 600
             ),
+            max_concurrent=config.get("async_task", {}).get("max_concurrent", 3),
         )
 
         # 初始化 DB
@@ -292,7 +294,7 @@ class QQGateway:
         self._proactive.stop_all()
         await self._napcat.stop()
 
-    # ── 任务进度消息发送（供 AsyncTaskManager 回调）──────────────────
+    # ── 任务进度消息发送（供 TaskPool 回调）──────────────────
 
     async def _send_task_progress(self, task: AsyncTask, text: str) -> None:
         if task.group_id:
@@ -397,16 +399,18 @@ class QQGateway:
                 )
             return
 
+        # 多任务支持：不再硬性拒绝，只提示排队
         if active_task and active_task.status in (
             TaskStatus.RUNNING,
             TaskStatus.PENDING,
         ):
+            # 允许同时开启多个任务，只给温馨提示
             await self._send_private_delayed(
                 qq,
-                f"小萌正在处理上一个任务 (ID: {active_task.task_id})，"
-                f"请稍候或用 /取消任务 {active_task.task_id} 取消后重新提问~",
+                f"💡 你还有一个任务 ({active_task.task_id}) 正在处理中，"
+                f"新任务会同时进行，互不干扰~",
             )
-            return
+            # 不 return，继续创建新任务
 
         # ── 创建新任务 ───────────────────────────────────────────────
         nick = event.sender.nickname or str(qq)
@@ -501,7 +505,9 @@ class QQGateway:
             TaskStatus.RUNNING,
             TaskStatus.PENDING,
         ):
-            return  # 静默等待当前任务
+            # 群聊中允许并发，但给发送者私信提示
+            # 不 return，继续创建新任务
+            pass
 
         # ── 创建新任务 ───────────────────────────────────────────────
         task = await self._task_manager.create_and_run(
@@ -517,7 +523,8 @@ class QQGateway:
     # ──────────────────────────────────────────────
 
     def _make_task_coro_factory(self):
-        """返回一个 coro factory，用于 AsyncTaskManager.create_and_run"""
+        # 将使用 ReActLoop 进行推理-行动循环（后续重构）
+        """返回一个 coro factory，用于 TaskPool.create_and_run"""
 
         async def _run(task: AsyncTask):
             session_key = task.session_key
@@ -730,7 +737,9 @@ class QQGateway:
                         timeout=first_timeout,
                     )
                 except asyncio.TimeoutError:
-                    timeout_msg = f"模型响应超时（{first_timeout}秒），请稍后重试或简化问题~"
+                    timeout_msg = (
+                        f"模型响应超时（{first_timeout}秒），请稍后重试或简化问题~"
+                    )
                     await self._task_manager.send_progress(task, timeout_msg)
                     return timeout_msg
 
@@ -819,7 +828,7 @@ class QQGateway:
                         break
 
                 final_text = self._clean_reply(response.content or "")
-                
+
                 if not final_text.strip():
                     final_text = "（处理完成，但没有生成回复内容）"
                     logger.warning(f"任务 {task.task_id} 空结果")
@@ -835,7 +844,7 @@ class QQGateway:
                     await self._task_manager.send_progress(task, final_text)
                 except Exception as send_err:
                     logger.error(f"任务 {task.task_id} 发送结果失败: {send_err}")
-                
+
                 self._save_message(session_key, "assistant", final_text)
                 self._maybe_compress(session_key)
 
