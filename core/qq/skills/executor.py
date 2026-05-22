@@ -1,18 +1,10 @@
-"""
-Skill 执行器
-
-上下文感知的技能执行引擎：
-- 接收 SkillContext（包含 model_tier, user_level, identity）
-- 根据权限过滤可用技能
-- 执行技能 handler（如果存在）
-- 返回执行结果
-"""
+"""Skill 执行器：上下文感知的技能 prompt 构建器。"""
 
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from .definition import ModelTier, SkillDefinition, SkillRisk, UserLevel
+from .definition import ModelTier, SkillDefinition, UserLevel
 from .permissions import SkillPermissionChecker
 
 logger = logging.getLogger(__name__)
@@ -88,33 +80,6 @@ class SkillExecutor:
         return self._perm.filter_skills(
             skills, ctx.model_tier, ctx.user_level, ctx.identity,
         )
-
-    async def execute(
-        self,
-        skill: SkillDefinition,
-        ctx: SkillContext,
-        *args,
-        **kwargs,
-    ) -> Optional[str]:
-        """执行技能 handler（如果有的话）"""
-        if not self._perm.can_use(skill, ctx.model_tier, ctx.user_level, ctx.identity):
-            logger.warning(f"技能 {skill.name} 权限不足，跳过执行")
-            return f"权限不足：{skill.name} 需要 {skill.permission.min_user_level.label()}+"
-
-        if skill.handler is None:
-            logger.debug(f"技能 {skill.name} 没有 handler")
-            return None
-
-        try:
-            import asyncio
-            if asyncio.iscoroutinefunction(skill.handler):
-                result = await skill.handler(ctx, *args, **kwargs)
-            else:
-                result = skill.handler(ctx, *args, **kwargs)
-            return str(result) if result is not None else ""
-        except Exception as e:
-            logger.error(f"执行技能 {skill.name} 失败: {e}")
-            return f"技能 {skill.name} 执行失败: {e}"
 
     def build_active_prompt(
         self,

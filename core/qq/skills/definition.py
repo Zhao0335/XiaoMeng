@@ -10,7 +10,7 @@ Skill 系统核心定义
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class SkillRisk(IntEnum):
@@ -110,8 +110,6 @@ class SkillDefinition:
 
     source_file: str = ""
 
-    handler: Optional[Callable] = None
-
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_summary(self) -> Dict[str, Any]:
@@ -126,21 +124,4 @@ class SkillDefinition:
             "enabled": self.enabled,
             "always_active": self.always_active,
             "tags": self.tags,
-        }
-
-    def to_tool_schema(self) -> Optional[Dict[str, Any]]:
-        """如果技能注册了 handler，生成 OpenAI function-calling schema"""
-        if self.handler is None:
-            return None
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
         }

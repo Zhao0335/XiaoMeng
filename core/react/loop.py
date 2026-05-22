@@ -101,7 +101,11 @@ class ReActLoop:
                 elif name in self.config.write_tools:
                     wrote_something = True
 
-                result = await tool_executor.execute(name, args)
+                try:
+                    result = await tool_executor.execute(name, args)
+                except Exception as e:
+                    logger.error(f"工具执行异常: {name} - {e}")
+                    result = f"工具执行失败: {e}"
                 step.observation = result
 
                 loop_messages.append(

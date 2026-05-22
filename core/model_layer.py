@@ -8,7 +8,9 @@ Special: 专业模型API，用于特定领域任务（代码、视觉、语音�
 """
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
 import time
 from abc import ABC, abstractmethod
@@ -16,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class ModelLayer(Enum):
@@ -73,6 +77,8 @@ class ModelEndpoint:
     num_ctx: Optional[int] = None  # ollama only: context window size
     provider: Optional[ModelProvider] = None  # 显式指定协议；None 则自动检测
     capabilities: List[str] = field(default_factory=list)
+    # thinking: "disable" → 发 enable_thinking:false；"none"/None → 不干预
+    thinking: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
@@ -157,6 +163,25 @@ class BaseModelAdapter(ABC):
             return 0.0
         return self._total_latency / self._request_count
 
+    def _get_proxy(self):
+        """Return (proxy_url, ctx_manager). ctx_manager clears system proxy env vars when proxy_raw==""."""
+        proxy_raw = self.endpoint.proxy
+        if proxy_raw == "":
+            return None, self._clear_proxy_env()
+        return proxy_raw or None, contextlib.nullcontext()
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _clear_proxy_env():
+        keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        saved = {k: os.environ.pop(k, None) for k in keys}
+        try:
+            yield
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
 
 class OpenAICompatibleAdapter(BaseModelAdapter):
     async def chat(
@@ -184,6 +209,16 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
                 "temperature": kwargs.get("temperature", self.endpoint.temperature),
             }
 
+            # thinking 控制：allow_thinking=True 时强制放开（用于图片描述等需要推理的场景）
+            force_thinking = kwargs.get("allow_thinking", False)
+            if self.endpoint.thinking == "disable" and not force_thinking:
+                payload["enable_thinking"] = False
+                if full_messages and full_messages[0]["role"] == "system":
+                    if "/no_think" not in full_messages[0]["content"]:
+                        full_messages[0]["content"] += "\n/no_think"
+                else:
+                    full_messages.insert(0, {"role": "system", "content": "/no_think"})
+
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
@@ -192,16 +227,11 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
             if self.endpoint.api_key:
                 headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
 
-            timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
+            _req_timeout = kwargs.get("request_timeout", self.endpoint.timeout)
+            timeout = aiohttp.ClientTimeout(total=_req_timeout)
 
-            _proxy_raw = self.endpoint.proxy
-            _no_proxy = _proxy_raw == ""
-            _proxy = None if _no_proxy else (_proxy_raw or None)
-            _saved_env = {}
-            if _no_proxy:
-                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                    _saved_env[k] = os.environ.pop(k, None)
-            try:
+            _proxy, _proxy_ctx = self._get_proxy()
+            with _proxy_ctx:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(
                         f"{self.endpoint.endpoint}/chat/completions",
@@ -214,17 +244,21 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
                             raise Exception(f"API error: {response.status} - {error_text}")
 
                         data = await response.json()
-            finally:
-                if _saved_env:
-                    for k, v in _saved_env.items():
-                        if v is not None:
-                            os.environ[k] = v
 
             choice = data["choices"][0]
             msg = choice["message"]
             content = msg.get("content") or ""
             tool_calls_raw = msg.get("tool_calls") or []
-            reasoning_content = msg.get("reasoning_content")  # 推理模型专属
+            reasoning_content = (
+                msg.get("reasoning_content")
+                or msg.get("reasoning")
+                or choice.get("reasoning_content")
+                or ""
+            )
+            # litellm 等代理会把 thinking 内容放进 reasoning_content，content 留空
+            # 此时用 reasoning_content 作为 fallback（_clean_reply 会进一步清理）
+            if not content and reasoning_content:
+                content = reasoning_content
 
             # 优先用标准 tool_calls 字段；没有时尝试从 content 解析 DSML 格式
             if tool_calls_raw:
@@ -278,14 +312,8 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
 
-            _proxy_raw = self.endpoint.proxy
-            _no_proxy = _proxy_raw == ""
-            _proxy = None if _no_proxy else (_proxy_raw or None)
-            _saved_env = {}
-            if _no_proxy:
-                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                    _saved_env[k] = os.environ.pop(k, None)
-            try:
+            _proxy, _proxy_ctx = self._get_proxy()
+            with _proxy_ctx:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(
                         f"{self.endpoint.endpoint}/chat/completions",
@@ -305,13 +333,8 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
                                         delta = data["choices"][0].get("delta", {})
                                         if "content" in delta:
                                             yield delta["content"]
-                                except:
+                                except (json.JSONDecodeError, KeyError, IndexError):
                                     continue
-            finally:
-                if _saved_env:
-                    for k, v in _saved_env.items():
-                        if v is not None:
-                            os.environ[k] = v
         finally:
             self._busy = False
 
@@ -444,14 +467,8 @@ class OllamaAdapter(BaseModelAdapter):
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
 
-            _proxy_raw = self.endpoint.proxy
-            _no_proxy = _proxy_raw == ""
-            _proxy = None if _no_proxy else (_proxy_raw or None)
-            _saved_env = {}
-            if _no_proxy:
-                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                    _saved_env[k] = os.environ.pop(k, None)
-            try:
+            _proxy, _proxy_ctx = self._get_proxy()
+            with _proxy_ctx:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(
                         f"{self.endpoint.endpoint}/api/chat", json=payload, proxy=_proxy
@@ -463,11 +480,6 @@ class OllamaAdapter(BaseModelAdapter):
                             )
 
                         data = await response.json()
-            finally:
-                if _saved_env:
-                    for k, v in _saved_env.items():
-                        if v is not None:
-                            os.environ[k] = v
 
             msg = data["message"]
             content = msg.get("content") or ""
@@ -495,9 +507,7 @@ class OllamaAdapter(BaseModelAdapter):
             self._request_count += 1
             self._total_latency += latency_ms
 
-            import logging as _logging
-
-            _logging.getLogger(__name__).info(
+            logger.info(
                 f"[Ollama] done={data.get('done_reason')} tc={len(parsed_tool_calls)} content={content!r:.120}"
             )
 
@@ -542,14 +552,8 @@ class OllamaAdapter(BaseModelAdapter):
 
             timeout = aiohttp.ClientTimeout(total=self.endpoint.timeout)
 
-            _proxy_raw = self.endpoint.proxy
-            _no_proxy = _proxy_raw == ""
-            _proxy = None if _no_proxy else (_proxy_raw or None)
-            _saved_env = {}
-            if _no_proxy:
-                for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                    _saved_env[k] = os.environ.pop(k, None)
-            try:
+            _proxy, _proxy_ctx = self._get_proxy()
+            with _proxy_ctx:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(
                         f"{self.endpoint.endpoint}/api/chat", json=payload, proxy=_proxy
@@ -559,13 +563,8 @@ class OllamaAdapter(BaseModelAdapter):
                                 data = json.loads(line)
                                 if "message" in data and "content" in data["message"]:
                                     yield data["message"]["content"]
-                            except:
+                            except (json.JSONDecodeError, KeyError):
                                 continue
-            finally:
-                if _saved_env:
-                    for k, v in _saved_env.items():
-                        if v is not None:
-                            os.environ[k] = v
         finally:
             self._busy = False
 
@@ -797,10 +796,12 @@ class ModelLayerRouter:
         self, layer: ModelLayer, role: ModelRole = None
     ) -> Optional[BaseModelAdapter]:
         if role:
+            # Role 优先：忽略 _busy（远程 API 能处理并发请求），不 fall-through 到 layer
             for model_id in self._roles[role]:
                 adapter = self._adapters.get(model_id)
-                if adapter and adapter.is_available:
+                if adapter and adapter.endpoint.enabled:
                     return adapter
+            return None
 
         for model_id in self._layers[layer]:
             adapter = self._adapters.get(model_id)
@@ -851,8 +852,8 @@ class ModelLayerRouter:
                 role_str = result.get("special_role")
                 if role_str:
                     return ModelRole(role_str)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"should_use_special 解析失败: {e}")
 
         return None
 

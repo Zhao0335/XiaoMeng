@@ -20,11 +20,15 @@ from pathlib import Path
 
 import httpx
 
+# data/ 根目录（main.py 在 data/skills/scheduler/ 下，往上三级）
+DATA_DIR = Path(__file__).parent.parent.parent
+
 # ====== 配置 ======
 TASKS_FILE = Path(__file__).parent / "tasks.json"
 PID_FILE = Path(__file__).parent / "scheduler.pid"
 LOG_FILE = Path(__file__).parent / "scheduler.log"
-NAPCAT_API = "http://127.0.0.1:3002"
+# Bot 本地 HTTP 中继地址（bot 启动后监听，转发消息给 NapCat）
+BOT_RELAY_API = "http://127.0.0.1:3003"
 POLL_INTERVAL = 5  # 每5秒检查一次任务文件
 
 # ====== 日志 ======
@@ -36,8 +40,10 @@ def log(msg):
 
 
 # ====== Napcat API 发送消息 ======
-async def send_msg(text: str, target: dict):
-    """发送 QQ 消息"""
+async def send_msg(text: str, target):
+    """通过 bot 本地中继发送 QQ 消息（bot 监听 BOT_RELAY_API）"""
+    if isinstance(target, str):
+        target = {"user_id": int(target)} if target.isdigit() else {}
     async with httpx.AsyncClient(timeout=10) as client:
         payload = {"message": text}
         if "group_id" in target:
@@ -45,7 +51,7 @@ async def send_msg(text: str, target: dict):
         elif "user_id" in target:
             payload["user_id"] = target["user_id"]
         try:
-            resp = await client.post(f"{NAPCAT_API}/send_msg", json=payload)
+            resp = await client.post(f"{BOT_RELAY_API}/send_msg", json=payload)
             if resp.status_code == 200:
                 log(f"✅ 消息发送成功 -> {target}")
             else:
@@ -60,7 +66,7 @@ def parse_cron(cron_str: str):
     try:
         parts = cron_str.strip().split(":")
         return {"hour": int(parts[0]), "minute": int(parts[1])}
-    except:
+    except Exception:
         return None
 
 
@@ -93,6 +99,24 @@ def should_run_now(task: dict, last_run: dict) -> bool:
     return True
 
 
+async def send_instruct(prompt: str, target: dict, session_key: str = "", route: str = ""):
+    """通过 bot 本地中继触发小萌执行 AI 指令"""
+    async with httpx.AsyncClient(timeout=15) as client:
+        payload: dict = {"prompt": prompt, "target": target}
+        if session_key:
+            payload["session_key"] = session_key
+        if route:
+            payload["route"] = route
+        try:
+            resp = await client.post(f"{BOT_RELAY_API}/instruct", json=payload)
+            if resp.status_code == 200:
+                log(f"✅ 指令任务已创建 -> {target}")
+            else:
+                log(f"❌ 指令任务创建失败 [{resp.status_code}]: {resp.text}")
+        except Exception as e:
+            log(f"❌ 指令任务异常: {e}")
+
+
 async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
     """检查并执行到时的任务"""
     now = datetime.now()
@@ -107,7 +131,6 @@ async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
                 last_run[task_id] = f"{now.hour}:{now.minute}"
 
         elif task_type == "interval":
-            # 间隔任务：检查上一次执行时间
             interval_minutes = task.get("interval_minutes", 60)
             last = task.get("_last_run_time", 0)
             if time.time() - last >= interval_minutes * 60:
@@ -116,7 +139,6 @@ async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
                 task["_last_run_time"] = time.time()
 
         elif task_type == "once":
-            # 一次性任务：检查是否到了执行时间
             run_at = task.get("run_at", "")
             target_time = parse_cron(run_at)
             if target_time:
@@ -126,7 +148,19 @@ async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
                         await send_msg(task.get("msg", "⏰ 小萌提醒时间到！"), task.get("target", {}))
                         task["_done"] = True
 
+        elif task_type == "instruct":
+            if should_run_now(task, last_run):
+                log(f"🤖 执行 AI 指令任务 [{task_id}]")
+                await send_instruct(
+                    prompt=task.get("prompt", ""),
+                    target=task.get("target", {}),
+                    session_key=task.get("session_key", ""),
+                    route=task.get("route", ""),
+                )
+                last_run[task_id] = f"{now.hour}:{now.minute}"
+
     return last_run
+
 
 
 def load_tasks() -> list:
@@ -187,7 +221,7 @@ def read_pid():
         with open(PID_FILE) as f:
             try:
                 return int(f.read().strip())
-            except:
+            except Exception:
                 return None
     return None
 
@@ -217,7 +251,7 @@ def status_scheduler():
             os.kill(pid, 0)  # 检查进程是否存在
             log(f"✅ Scheduler 正在运行 (PID: {pid})")
             return True
-        except:
+        except Exception:
             log("⚠️ PID 文件存在但进程已不存在")
             PID_FILE.unlink(missing_ok=True)
             return False

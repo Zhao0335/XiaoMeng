@@ -1,0 +1,17 @@
+# Runtime data — mounted as a volume at container start
+data/
+
+# Cache and logs
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Dev artifacts
+*.log
+*.pid
+.git/
+Tutorial/
+Tutorial_GitHub/
+tui/

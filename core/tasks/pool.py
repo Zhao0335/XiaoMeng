@@ -67,8 +67,8 @@ class TaskPool:
         conn.close()
 
     def _save(self, task: AsyncTask) -> None:
+        conn = sqlite3.connect(self._db_path)
         try:
-            conn = sqlite3.connect(self._db_path)
             conn.execute(
                 """INSERT OR REPLACE INTO async_tasks
                    (task_id, session_key, sender_qq, group_id, status,
@@ -89,9 +89,10 @@ class TaskPool:
                 ),
             )
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.warning(f"持久化任务失败: {e}")
+        finally:
+            conn.close()
 
     # ── 查询 ────────────────────────────────────────────────────
 

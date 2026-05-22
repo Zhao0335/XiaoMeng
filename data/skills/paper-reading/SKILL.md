@@ -2,8 +2,11 @@
 name: paper-reading
 description: 帮助用户阅读和分析学术论文
 version: 1.0.0
-author: XiaoMeng
 emoji: 📚
+always: false
+risk: read_only
+min_user_level: stranger
+min_model_tier: cloud
 tags:
   - paper
   - research

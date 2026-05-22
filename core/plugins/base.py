@@ -8,10 +8,31 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING, Union
+try:
+    from typing import TypedDict
+except ImportError:
+    from typing_extensions import TypedDict
 import logging
 
+if TYPE_CHECKING:
+    from ..qq.napcat import NapCatClient
+    from ..tasks import AsyncTask
+
 logger = logging.getLogger(__name__)
+
+
+class PluginContext(TypedDict, total=False):
+    """插件工具调用的上下文，传入 on_tool_call 的 context 参数。"""
+    session_key: str        # "group:xxx" 或 "private:xxx"
+    sender_qq: int          # 发送者 QQ 号
+    level: int              # 权限级别 0=陌生人 1=管理员 2=主人
+    identity: str           # canonical 身份名
+    napcat: "NapCatClient"  # QQ API 客户端（WebSocket）
+    data_dir: Path          # data/ 目录路径
+    is_private: bool        # 是否私聊
+    target_id: int          # 发送目标（group_id 或 user_id）
+    task: "AsyncTask"       # 当前异步任务对象
 
 
 class PluginState(Enum):
@@ -58,7 +79,11 @@ class ToolDefinition:
     description: str
     parameters: Dict[str, Any]
     handler: Optional[Callable] = None
-    
+    # 最低用户权限：0=陌生人，1=管理员，2=主人（对应 PermLevel）
+    min_user_level: int = 0
+    # 调用时展示给用户的进度提示（None=不展示）
+    progress_msg: Optional[str] = None
+
     def to_openai_schema(self) -> dict:
         return {
             "type": "function",
@@ -184,19 +209,9 @@ class PluginBase(ABC):
         self,
         tool_name: str,
         arguments: Dict[str, Any],
-        context: Dict[str, Any],
+        context: "PluginContext",
     ) -> str:
-        """
-        工具调用处理
-        
-        Args:
-            tool_name: 工具名称
-            arguments: 工具参数
-            context: 上下文信息（包含 qq, session_key 等）
-            
-        Returns:
-            str: 工具执行结果
-        """
+        """工具调用处理，context 字段见 PluginContext。"""
         return f"工具 {tool_name} 未实现"
     
     async def on_command(

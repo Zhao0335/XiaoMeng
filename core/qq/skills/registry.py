@@ -139,21 +139,6 @@ class SkillRegistry:
         available = self.get_for_context(model_tier, user_level, identity)
         return [s for s in available if s.always_active]
 
-    def get_tool_schemas(
-        self,
-        model_tier: ModelTier,
-        user_level: UserLevel,
-        identity: str = "",
-    ) -> List[Dict]:
-        """获取当前上下文中可用的工具 schema（用于 function-calling）"""
-        available = self.get_for_context(model_tier, user_level, identity)
-        schemas = []
-        for s in available:
-            schema = s.to_tool_schema()
-            if schema:
-                schemas.append(schema)
-        return schemas
-
     def validate(self, name: str) -> Optional[str]:
         """验证技能定义的完整性
 

@@ -309,6 +309,31 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "send_file",
+            "description": (
+                "将 workspace（data/）下的文件发送给当前聊天对象（群或私聊）。"
+                "适合：发送生成的文档、题目文件、笔记、图片等。"
+                "可附带一条说明消息一起发送。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "相对于 data/ 的文件路径，如 'skills/daily-quiz/questions.md'"
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": "发送文件前附带的说明消息（可选）"
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "reload_skills",
             "description": (
                 "重新加载 skills 目录下的所有技能文件。"
@@ -339,6 +364,7 @@ TOOL_PROGRESS_MSG = {
     "read_file":            lambda args: None,
     "list_files":           lambda args: None,
     "reload_skills":        lambda args: "（小萌重新加载技能中~）",
+    "send_file":            lambda args: f"（小萌发送文件 {args.get('path', '')} ~）",
 }
 
 
@@ -364,6 +390,7 @@ class QQToolExecutor:
         target_id: int = 0, # 发送目标（group_id 或 user_id）
         is_private: bool = False,
         task=None,          # AsyncTask，send_message + wait_reply 需要
+        plugin_manager=None,  # PluginManager，插件工具分发
     ):
         self._db_path = db_path
         self._soul_path = soul_path
@@ -381,6 +408,7 @@ class QQToolExecutor:
         self._target_id = target_id
         self._is_private = is_private
         self._task = task
+        self._plugin_manager = plugin_manager
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if tool_name == "web_search":
@@ -453,8 +481,24 @@ class QQToolExecutor:
                 arguments.get("command", ""),
                 int(arguments.get("timeout", 30)),
             )
+        elif tool_name == "send_file":
+            path = arguments.get("path") or arguments.get("file_path", "")
+            return await self._send_file(path, arguments.get("caption", ""))
         elif tool_name == "reload_skills":
             return self._reload_skills()
+        elif self._plugin_manager is not None:
+            ctx = {
+                "session_key": self._session_key,
+                "sender_qq": self._sender_qq,
+                "level": self._level,
+                "identity": self._identity,
+                "napcat": self._napcat,
+                "data_dir": self._data_dir,
+                "is_private": self._is_private,
+                "target_id": self._target_id,
+                "task": self._task,
+            }
+            return await self._plugin_manager.dispatch_tool_call(tool_name, arguments, ctx)
         else:
             return f"未知工具: {tool_name}"
 
@@ -743,8 +787,7 @@ class QQToolExecutor:
                 return f"文件不存在: {path}"
             if target.is_dir():
                 return f"{path} 是目录，请用 list_files"
-            content = target.read_text(encoding="utf-8")
-            # 限制输出长度，避免撑爆 context
+            content = self._extract_text(target)
             if len(content) > 4000:
                 content = content[:4000] + f"\n…（文件还有 {len(content)-4000} 字符，已截断）"
             return content
@@ -752,6 +795,49 @@ class QQToolExecutor:
             return f"路径错误: {e}"
         except Exception as e:
             return f"读取失败: {e}"
+
+    @staticmethod
+    def _extract_text(path: Path) -> str:
+        """从各种文件格式提取纯文本。"""
+        suffix = path.suffix.lower()
+
+        if suffix == ".pdf":
+            import fitz  # pymupdf
+            doc = fitz.open(str(path))
+            pages = [doc[i].get_text() for i in range(len(doc))]
+            doc.close()
+            return "\n".join(pages).strip()
+
+        if suffix in (".docx",):
+            from docx import Document
+            doc = Document(str(path))
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+        if suffix in (".pptx",):
+            from pptx import Presentation
+            prs = Presentation(str(path))
+            lines = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        lines.append(shape.text_frame.text)
+            return "\n".join(lines).strip()
+
+        if suffix in (".xlsx", ".xls"):
+            import openpyxl
+            wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+            lines = []
+            for ws in wb.worksheets:
+                lines.append(f"[Sheet: {ws.title}]")
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) if c is not None else "" for c in row]
+                    if any(cells):
+                        lines.append("\t".join(cells))
+            wb.close()
+            return "\n".join(lines).strip()
+
+        # 其他格式当纯文本读
+        return path.read_text(encoding="utf-8", errors="replace")
 
     # ── write_file ────────────────────────────────────
 
@@ -774,7 +860,7 @@ class QQToolExecutor:
             logger.info(f"write_file: {path} ({mode}) by {self._sender_qq}")
             # 如果写入了 skills/ 目录，自动重新加载技能注册中心
             if path.strip("/").startswith("skills"):
-                self._reload_skills_registry()
+                self._reload_skills()
                 return f"已写入 {path}（技能已自动加载生效）"
             return f"已写入 {path}"
         except ValueError as e:
@@ -828,7 +914,7 @@ class QQToolExecutor:
                 target.unlink()
             logger.info(f"delete_file: {path} by {self._sender_qq}")
             if path.strip("/").startswith("skills"):
-                self._reload_skills_registry()
+                self._reload_skills()
                 return f"已删除 {path}（技能注册已同步更新）"
             return f"已删除 {path}"
         except ValueError as e:
@@ -924,6 +1010,53 @@ class QQToolExecutor:
         else:
             return f"已发送消息: {message[:100]}"
 
+    # ── send_file ─────────────────────────────────────
+
+    async def _send_file(self, path: str, caption: str = "") -> str:
+        import base64 as _b64
+        if not path:
+            return "路径不能为空"
+        if not self._napcat or not self._target_id:
+            return "发送目标未配置，无法发送文件"
+        try:
+            target = self._resolve_workspace_path(path)
+            if not target.exists():
+                return f"文件不存在: {path}"
+            if target.is_dir():
+                return f"{path} 是目录，请指定具体文件"
+            if caption:
+                try:
+                    if self._is_private:
+                        await self._napcat.send_private_msg(self._target_id, caption)
+                    else:
+                        await self._napcat.send_group_msg(self._target_id, caption)
+                except Exception:
+                    pass
+            # NapCat 运行在容器内，无法访问宿主机 file:// 路径
+            # 用 base64:// 直接传文件内容，绕过路径可访问性问题
+            file_b64 = _b64.b64encode(target.read_bytes()).decode()
+            file_ref = f"base64://{file_b64}"
+            file_name = target.name
+            if self._is_private:
+                resp = await self._napcat.call_api("upload_private_file", {
+                    "user_id": self._target_id,
+                    "file": file_ref,
+                    "name": file_name,
+                })
+            else:
+                resp = await self._napcat.call_api("upload_group_file", {
+                    "group_id": self._target_id,
+                    "file": file_ref,
+                    "name": file_name,
+                })
+            if resp.get("retcode", 0) != 0:
+                return f"发送失败 (retcode={resp['retcode']}): {resp.get('message', '')}"
+            return f"✅ 文件已发送: {file_name}"
+        except ValueError as e:
+            return f"路径错误: {e}"
+        except Exception as e:
+            return f"发送失败: {e}"
+
     def _resolve_workspace_path(self, path: str) -> Path:
         resolved = (self._data_dir / path).resolve()
         if not str(resolved).startswith(str(self._data_dir)):
@@ -931,21 +1064,41 @@ class QQToolExecutor:
         return resolved
 
     def _reload_skills(self) -> str:
-        """重新加载 skills 目录下所有技能文件，使新写入的 skill 立即生效。"""
-        return self._reload_skills_registry()
-
-    @staticmethod
-    def _reload_skills_registry() -> str:
+        """重新加载 skills/ 下所有技能文件，并重新注册各插件的 SKILL.md。"""
         try:
-            from .skills import SkillRegistry
+            from .skills import SkillRegistry, SkillLoader
             registry = SkillRegistry.get_instance()
             count = registry.reload()
+
+            # 同步重新注册插件 SKILL.md
+            if self._plugin_manager is not None:
+                for _name, _plugin in self._plugin_manager.initialized.items():
+                    _skill_md = _plugin.plugin_dir / "SKILL.md"
+                    if _skill_md.exists():
+                        _loader = SkillLoader(str(_plugin.plugin_dir))
+                        _skill_def = _loader.load_single("SKILL.md")
+                        if _skill_def:
+                            registry.register(_skill_def, override=True)
+                            count += 1
+
             if count == 0:
-                return "skills 目录下没有找到技能文件（目录可能为空或不存在）"
+                return "没有找到任何技能文件"
             names = ", ".join(s.name for s in registry.list_all())
             return f"已重新加载 {count} 个技能：{names}"
         except Exception as e:
             logger.error(f"reload_skills 失败: {e}")
+            return f"重新加载技能失败: {e}"
+
+    @staticmethod
+    def _reload_skills_registry() -> str:
+        """向后兼容保留，内部调 SkillRegistry.reload()。"""
+        try:
+            from .skills import SkillRegistry
+            registry = SkillRegistry.get_instance()
+            count = registry.reload()
+            names = ", ".join(s.name for s in registry.list_all())
+            return f"已重新加载 {count} 个技能：{names}"
+        except Exception as e:
             return f"重新加载技能失败: {e}"
 
 
@@ -1025,10 +1178,11 @@ def get_tool_schemas_for_context(
     model_tier: ModelTier,
     user_level: UserLevel,
     identity: str = "",
+    plugin_manager=None,
 ) -> list:
-    """获取当前上下文可用的工具 schema 列表（含 SkillRegistry 注册的动态工具）。"""
+    """获取当前上下文可用的工具 schema 列表（内置工具 + 插件工具）。"""
     from .skills import ToolSchemaBuilder
-    return ToolSchemaBuilder.from_tools(base_tools, model_tier, user_level, identity)
+    return ToolSchemaBuilder.from_tools(base_tools, model_tier, user_level, identity, plugin_manager)
 
 
 # ──────────────────────────────────────────────────────────────

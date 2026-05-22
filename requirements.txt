@@ -34,3 +34,6 @@ aiohttp>=3.9.0
 python-multipart>=0.0.6
 aiofiles>=23.0.0
 requests>=2.31.0
+
+# 搜索工具
+ddgs>=6.0

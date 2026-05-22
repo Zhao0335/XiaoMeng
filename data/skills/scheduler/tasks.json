@@ -1,0 +1,35 @@
+{
+  "tasks": [
+    {
+      "id": "remind_locker",
+      "type": "cron",
+      "cron": "06:00",
+      "msg": "⏰ 哥哥~ 该锁柜子啦！别忘了哦！🔒✨",
+      "target": {
+        "user_id": 3797723137
+      }
+    },
+    {
+      "id": "dsa_morning_question",
+      "type": "instruct",
+      "cron": "09:00",
+      "prompt": "📚 现在是每日一题时间！请出一道数据结构与算法方向的中等难度题目（可以是 LeetCode 风格），包含题目描述、示例输入输出。提示大家先自己思考，告诉他们晚上8点会发解析。用轻松活泼的语气，加上小萌风格的颜文字。直接输出题目内容发给群里即可。",
+      "target": {
+        "group_id": 1092678483
+      },
+      "session_key": "scheduler:dsa:1092678483",
+      "route": "cloud"
+    },
+    {
+      "id": "dsa_evening_solution",
+      "type": "instruct",
+      "cron": "20:00",
+      "prompt": "🌙 现在是每日一题的解析时间！请根据你今天早上出的那道 DSA 题，给出详细解析：核心思路、关键知识点、参考代码（Python 或 C++）、时间空间复杂度分析。用活泼有温度的语气，加上小萌风格的颜文字。直接输出解析内容发给群里即可。",
+      "target": {
+        "group_id": 1092678483
+      },
+      "session_key": "scheduler:dsa:1092678483",
+      "route": "cloud"
+    }
+  ]
+}

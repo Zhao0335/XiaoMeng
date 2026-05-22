@@ -2,8 +2,11 @@
 name: code-assistant
 description: 代码编写、调试和解释助手
 version: 1.0.0
-author: XiaoMeng
 emoji: 💻
+always: false
+risk: read_only
+min_user_level: stranger
+min_model_tier: cloud
 tags:
   - code
   - programming

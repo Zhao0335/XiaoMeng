@@ -1,121 +1,40 @@
 ---
 name: self-improving
-description: 自我学习和改进能力，让AI能够持续进化
-version: 1.0.0
-author: XiaoMeng
+description: 从交互中学习——记录用户纠正、发现的最佳实践，持续改进行为
+version: 1.1.0
 emoji: 🧠
 always: true
+risk: sensitive
+min_user_level: stranger
+min_model_tier: local
 tags:
   - learning
+  - memory
   - self-improvement
-  - evolution
 ---
 
 # 自我改进技能
 
-让 AI 能够从交互中学习，持续改进自己的能力。
+主动记录交互中的学习内容，用现有工具持续改进。
 
-## 使用说明
+## 何时记录
 
-### 记录学习内容
+| 情况 | 操作 |
+|------|------|
+| 用户说"不对"、"错了"、"应该是" | `add_memory` 记录正确做法 |
+| 发现更好的方法 | `add_memory` 记录最佳实践 |
+| 用户要求记住某事 | `add_memory` 立即存储 |
+| 发现角色/行为需要调整 | `update_soul` 更新 SOUL.md |
 
-当发生以下情况时，主动记录学习内容：
+## 使用工具
 
-1. **用户纠正**：用户指出错误并给出正确答案
-2. **发现最佳实践**：发现更好的做事方法
-3. **遇到错误**：操作失败或命令执行错误
-4. **功能请求**：用户提出新功能需求
+- **`add_memory`**：记录知识、纠正、偏好
+- **`search_memory`**：查找已记录的内容避免重复犯错
+- **`update_soul`**：调整核心人格和行为准则（主人授权）
+- **`write_file`**：写入较大的学习总结到 `data/memory/`
 
-### 可用工具
+## 原则
 
-- `record_error`: 记录错误
-- `record_correction`: 记录用户纠正
-- `record_best_practice`: 记录最佳实践
-- `record_feature_request`: 记录功能请求
-- `create_skill`: 创建新技能
-
-## 核心规则
-
-### 何时记录
-
-1. **必须记录**：
-   - 用户说"不对"、"错了"、"应该是"
-   - 命令执行失败
-   - 用户明确要求记住某事
-
-2. **应该记录**：
-   - 发现更高效的方法
-   - 用户表扬的回复方式
-   - 用户反复问的问题
-
-### 学习提升
-
-高优先级的学习内容会被自动提升到核心文件：
-- 工作流改进 → AGENTS.md
-- 工具技巧 → TOOLS.md
-- 行为模式 → SOUL.md
-
-### 创建技能
-
-当发现某类任务频繁出现时，可以创建新技能：
-
-```json
-{
-  "name": "技能名称",
-  "description": "技能描述",
-  "instructions": "详细使用说明",
-  "examples": [
-    {"user_request": "示例请求", "command": "示例响应"}
-  ]
-}
-```
-
-## 示例
-
-用户请求: 不对，应该是用 pip install 不是 npm install
-
-```json
-{
-  "tool": "record_correction",
-  "arguments": {
-    "original": "使用 npm install 安装",
-    "correction": "Python 包应该用 pip install 安装",
-    "reason": "用户纠正：Python 项目使用 pip 而非 npm"
-  }
-}
-```
-
-用户请求: 记住，主人喜欢简洁的回复
-
-```json
-{
-  "tool": "record_best_practice",
-  "arguments": {
-    "practice": "回复要简洁，最多2-3句话",
-    "context": "主人偏好",
-    "priority": "high"
-  }
-}
-```
-
-用户请求: 希望能帮我自动整理下载文件夹
-
-```json
-{
-  "tool": "record_feature_request",
-  "arguments": {
-    "feature": "自动整理下载文件夹",
-    "description": "按文件类型自动分类下载文件夹中的文件"
-  }
-}
-```
-
-## 学习文件结构
-
-```
-.learnings/
-├── ERRORS.md          # 错误记录
-├── LEARNINGS.md       # 学习记录
-├── FEATURE_REQUESTS.md # 功能请求
-└── RESOLVED.md        # 已解决问题
-```
+- 不等用户提醒——发现错误/纠正时主动记录
+- 记录"为什么"而不只是"是什么"
+- 同类知识归并，不重复记录

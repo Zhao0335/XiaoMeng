@@ -205,17 +205,16 @@ class PluginManager:
             for alias in command.aliases:
                 self._command_handlers.pop(alias, None)
     
-    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """
-        获取所有插件的工具 Schema（OpenAI 格式）
-        
-        Returns:
-            List[Dict[str, Any]]: 工具 Schema 列表
+    def get_all_tool_schemas(self, user_level: int = 0) -> List[Dict[str, Any]]:
+        """获取当前用户权限下可用的插件工具 Schema（OpenAI 格式）。
+
+        user_level: 0=stranger, 1=admin, 2=owner（对应 PermLevel 整数值）
         """
         schemas = []
         for plugin in self._initialized.values():
             for tool in plugin.get_tools():
-                schemas.append(tool.to_openai_schema())
+                if user_level >= tool.min_user_level:
+                    schemas.append(tool.to_openai_schema())
         return schemas
     
     def get_all_tools(self) -> Dict[str, ToolDefinition]:
@@ -246,30 +245,43 @@ class PluginManager:
                     commands[alias] = command
         return commands
     
+    def get_tool_progress_msg(self, tool_name: str) -> Optional[str]:
+        """获取工具的进度提示消息（None=不展示）。"""
+        plugin = self._tool_handlers.get(tool_name)
+        if plugin is None:
+            return None
+        for tool in plugin.get_tools():
+            if tool.name == tool_name:
+                return tool.progress_msg
+        return None
+
     async def dispatch_tool_call(
         self,
         tool_name: str,
         arguments: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """
-        分发工具调用
-        
-        Args:
-            tool_name: 工具名称
-            arguments: 工具参数
-            context: 上下文信息
-            
-        Returns:
-            str: 工具执行结果
+        """分发工具调用，调用前先做权限检查。
+
+        context 中的 "level" 字段（int）表示当前用户权限级别。
         """
         context = context or {}
-        
+
         if tool_name not in self._tool_handlers:
             return f"未知工具: {tool_name}"
-        
+
         plugin = self._tool_handlers[tool_name]
-        
+
+        # 权限检查
+        user_level = int(context.get("level", 0))
+        for tool in plugin.get_tools():
+            if tool.name == tool_name:
+                if user_level < tool.min_user_level:
+                    _names = {0: "陌生人", 1: "管理员", 2: "主人"}
+                    required = _names.get(tool.min_user_level, str(tool.min_user_level))
+                    return f"没有权限使用 {tool_name}（需要{required}权限）"
+                break
+
         try:
             result = await plugin.on_tool_call(tool_name, arguments, context)
             return result

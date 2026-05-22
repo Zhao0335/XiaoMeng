@@ -6,6 +6,7 @@ QQ Gateway
 """
 
 import asyncio
+import base64
 import json
 import logging
 import random
@@ -15,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from aiohttp import web as _aiohttp_web
+
 from ..model_layer import (
     ModelEndpoint,
     ModelLayer,
@@ -22,18 +25,16 @@ from ..model_layer import (
     ModelProvider,
     ModelRole,
 )
-from ..react import ReActConfig, ReActLoop
+from ..plugins import PluginManager
 from ..tasks import AsyncTask, TaskPool, TaskStatus
 from .commands import QQCommandParser
 from .napcat import NapCatClient
 from .onebot_events import (
-    Event,
     FriendRequestEvent,
     GroupInviteEvent,
     GroupMsgEvent,
     NoticeEvent,
     PrivateMsgEvent,
-    format_group_context,
     parse_event,
 )
 from .permissions import PermLevel, QQPermissionManager
@@ -41,8 +42,6 @@ from .proactive import ProactiveManager
 from .skills import (
     ModelTier,
     SkillContext,
-    SkillExecutor,
-    SkillRegistry,
     UserLevel,
 )
 from .tools import (
@@ -71,6 +70,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_qq    INTEGER,
     sender_name  TEXT,
     content      TEXT    NOT NULL,
+    attachments  TEXT    NOT NULL DEFAULT '[]',
     created_at   TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_key, id);
@@ -245,6 +245,7 @@ class QQGateway:
             "loop_max_tokens_fallback", {}
         ).get("local", 600)
         self._progress_last_sent: Dict[str, float] = {}  # session_key → timestamp
+        self._bg_tasks: set = set()  # keeps strong refs so GC doesn't cancel fire-and-forget tasks
 
         # persona 文件路径（动态读，不缓存内容）
         self._soul_path = Path(config.get("persona_path", "./data/persona/SOUL.md"))
@@ -264,6 +265,15 @@ class QQGateway:
         # 初始化 SkillRegistry（启动时加载所有技能文件）
         init_skill_registry(self._skills_dir)
 
+        # 插件系统：扫描 data/plugins/，延迟到 start() 中异步初始化
+        _plugins_dir = self._data_dir / "plugins"
+        _plugins_dir.mkdir(parents=True, exist_ok=True)
+        self._plugin_manager = PluginManager(_plugins_dir, auto_load=True, auto_initialize=False)
+
+        # 公式渲染缓存目录
+        from .formula import init_cache_dir as _init_formula_cache
+        self._formula_cache_dir = _init_formula_cache(str(self._data_dir))
+
         # 异步任务池（支持并发）
         self._task_manager = TaskPool(
             db_path=self._db_path,
@@ -282,6 +292,16 @@ class QQGateway:
     async def start(self) -> None:
         """启动 gateway（持续运行直到停止）"""
         logger.info("QQGateway 启动中...")
+        # 异步初始化插件（需要 event loop，不能在 __init__ 里做）
+        plugin_results = await self._plugin_manager.initialize_all()
+        if plugin_results:
+            ok = sum(1 for v in plugin_results.values() if v)
+            logger.info(f"插件系统: {ok}/{len(plugin_results)} 个插件初始化成功")
+        # 将各插件目录下的 SKILL.md 注册到 SkillRegistry
+        self._register_plugin_skills()
+        # 启动本地 HTTP 中继（供 scheduler 等进程发消息）
+        relay_port = self._cfg.get("bot_relay_port", 3003)
+        await self._start_relay_server(relay_port)
         await self._napcat.start()
         # 恢复未完成的任务
         restored = self._task_manager.load_running_tasks_from_db(
@@ -292,15 +312,114 @@ class QQGateway:
 
     async def stop(self) -> None:
         self._proactive.stop_all()
+        if hasattr(self, "_relay_runner"):
+            await self._relay_runner.cleanup()
         await self._napcat.stop()
+
+    def _register_plugin_skills(self) -> None:
+        """将 data/plugins/<name>/SKILL.md 注册到 SkillRegistry。"""
+        from .skills import SkillRegistry, SkillLoader
+        registry = SkillRegistry.get_instance()
+        count = 0
+        for name, plugin in self._plugin_manager.initialized.items():
+            skill_md = plugin.plugin_dir / "SKILL.md"
+            if skill_md.exists():
+                loader = SkillLoader(str(plugin.plugin_dir))
+                skill_def = loader.load_single("SKILL.md")
+                if skill_def:
+                    registry.register(skill_def, override=True)
+                    count += 1
+                    logger.info(f"插件 {name} 的 SKILL.md 已注册")
+        if count:
+            logger.info(f"从插件目录注册了 {count} 个技能文档")
+
+    # ── 本地 HTTP 中继（供 scheduler 等独立进程发消息）────────
+
+    async def _start_relay_server(self, port: int) -> None:
+        """启动本地 HTTP 中继，监听 127.0.0.1:<port>。
+
+        支持的接口：
+          POST /send_msg  {"message": str, "group_id": int}
+                         {"message": str, "user_id": int}
+        """
+        async def handle_send_msg(request: _aiohttp_web.Request) -> _aiohttp_web.Response:
+            try:
+                body = await request.json()
+            except Exception:
+                return _aiohttp_web.Response(status=400, text="invalid json")
+            text = body.get("message", "")
+            if not text:
+                return _aiohttp_web.Response(status=400, text="missing message")
+            try:
+                if "group_id" in body:
+                    await self._napcat.send_group_msg(int(body["group_id"]), text)
+                elif "user_id" in body:
+                    await self._napcat.send_private_msg(int(body["user_id"]), text)
+                else:
+                    return _aiohttp_web.Response(status=400, text="missing group_id or user_id")
+                return _aiohttp_web.Response(text="ok")
+            except Exception as e:
+                logger.error(f"中继发送失败: {e}")
+                return _aiohttp_web.Response(status=500, text=str(e))
+
+        async def handle_instruct(request: _aiohttp_web.Request) -> _aiohttp_web.Response:
+            """触发小萌执行 AI 指令并将结果发到指定 target。"""
+            try:
+                body = await request.json()
+            except Exception:
+                return _aiohttp_web.Response(status=400, text="invalid json")
+            prompt = body.get("prompt", "").strip()
+            target = body.get("target", {})
+            if not prompt:
+                return _aiohttp_web.Response(status=400, text="missing prompt")
+            group_id = int(target.get("group_id") or 0)
+            user_id = int(target.get("user_id") or 0)
+            if not group_id and not user_id:
+                return _aiohttp_web.Response(status=400, text="missing target group_id or user_id")
+            # session_key 用 scheduler: 前缀隔离，不污染群/私聊对话历史
+            # 同一 task_id 的任务共享 session，便于早/晚题目相互引用
+            session_key = body.get("session_key") or (
+                f"scheduler:group:{group_id}" if group_id else f"scheduler:private:{user_id}"
+            )
+            route = (body.get("route") or "").upper() or None
+            try:
+                self._save_message(session_key, "user", prompt, sender_qq=0, sender_name="定时指令")
+                task = await self._task_manager.create_and_run(
+                    session_key=session_key,
+                    sender_qq=0,
+                    group_id=group_id,
+                    coro_factory=self._make_task_coro_factory(
+                        forced_level=PermLevel.ADMIN,
+                        forced_route=route,
+                    ),
+                )
+                logger.info(f"定时指令任务 {task.task_id} 已创建 session={session_key}")
+                return _aiohttp_web.json_response({"task_id": task.task_id})
+            except Exception as e:
+                logger.error(f"定时指令创建失败: {e}")
+                return _aiohttp_web.Response(status=500, text=str(e))
+
+        app = _aiohttp_web.Application()
+        app.router.add_post("/send_msg", handle_send_msg)
+        app.router.add_post("/instruct", handle_instruct)
+        runner = _aiohttp_web.AppRunner(app)
+        await runner.setup()
+        site = _aiohttp_web.TCPSite(runner, "127.0.0.1", port)
+        await site.start()
+        self._relay_runner = runner
+        logger.info(f"本地消息中继已启动: http://127.0.0.1:{port}")
 
     # ── 任务进度消息发送（供 TaskPool 回调）──────────────────
 
     async def _send_task_progress(self, task: AsyncTask, text: str) -> None:
-        if task.group_id:
-            await self._napcat.send_group_msg(task.group_id, text)
-        else:
-            await self._napcat.send_private_msg(task.sender_qq, text)
+        parts = [p.strip() for p in text.split("\n\n")]
+        parts = [p for p in parts if p] or [text]
+        for part in parts:
+            await self._typing_delay(part)
+            if task.group_id:
+                await self._napcat.send_group_msg(task.group_id, part)
+            else:
+                await self._napcat.send_private_msg(task.sender_qq, part)
 
     # ──────────────────────────────────────────────
     # 事件入口
@@ -336,14 +455,21 @@ class QQGateway:
 
         session_key = f"private:{qq}"
         text = event.message
-        # 图片附件 → 追加 URL 让 LLM 知晓
-        _img_urls = [
-            a["data"].get("url") or a["data"].get("file", "")
-            for a in event.attachments
-            if a.get("type") == "image"
-        ]
-        if _img_urls:
-            text += "\n" + "\n".join(f"[用户发送了图片: {u}]" for u in _img_urls if u)
+        _all_img_atts = [a["data"] for a in event.attachments if a.get("type") == "image"]
+        _emoji_atts = [a for a in _all_img_atts if a.get("sub_type", 0) == 1]
+        _img_atts = [a for a in _all_img_atts if a.get("sub_type", 0) != 1]
+        if _emoji_atts:
+            text += "\n" + "[表情]" * len(_emoji_atts)
+        if _img_atts:
+            text += "\n" + "[图片（需要视觉理解）]" * len(_img_atts)
+        # 下载 QQ 发来的文件，告诉 LLM 路径
+        _file_atts = [a["data"] for a in event.attachments if a.get("type") == "file"]
+        for _f in _file_atts:
+            _saved = await self._download_qq_file(_f, group_id=0)
+            if _saved:
+                text += f"\n[文件已保存到 uploads/{_saved.name}，可用 read_file 读取]"
+            else:
+                text += f"\n[文件 {_f.get('name', '未知')} 下载失败]"
 
         # ── 任务管理命令 ────────────────────────────────────────────
         if text.strip().startswith("/取消任务 "):
@@ -399,29 +525,26 @@ class QQGateway:
                 )
             return
 
-        # 多任务支持：不再硬性拒绝，只提示排队
+        # 多任务支持：允许并发，不提示
         if active_task and active_task.status in (
             TaskStatus.RUNNING,
             TaskStatus.PENDING,
         ):
-            # 允许同时开启多个任务，只给温馨提示
-            await self._send_private_delayed(
-                qq,
-                f"💡 你还有一个任务 ({active_task.task_id}) 正在处理中，"
-                f"新任务会同时进行，互不干扰~",
-            )
-            # 不 return，继续创建新任务
+            pass  # 不 return，继续创建新任务
 
         # ── 创建新任务 ───────────────────────────────────────────────
         nick = event.sender.nickname or str(qq)
-        self._save_message(session_key, "user", text, qq, nick)
+        _att_records = [{"file": a.get("file") or a.get("file_id", ""), "sub_type": 0} for a in _img_atts]
+        _user_msg_id = self._save_message(session_key, "user", text, qq, nick, attachments=_att_records)
+        if _img_atts and _user_msg_id:
+            self._create_bg_task(self._bg_classify_and_save(_img_atts, _user_msg_id, session_key))
         self._init_person_memory_if_needed(qq, nick)
 
         task = await self._task_manager.create_and_run(
             session_key=session_key,
             sender_qq=qq,
             group_id=0,
-            coro_factory=self._make_task_coro_factory(),
+            coro_factory=self._make_task_coro_factory(image_atts=_img_atts, user_msg_id=_user_msg_id),
         )
 
         logger.info(f"任务 {task.task_id} 已创建 (私聊 {qq})")
@@ -440,14 +563,22 @@ class QQGateway:
         group_id = event.group_id
         session_key = f"group:{group_id}"
         text = event.message
-        # 图片附件 → 追加 URL 让 LLM 知晓
-        _img_urls = [
-            a["data"].get("url") or a["data"].get("file", "")
-            for a in event.attachments
-            if a.get("type") == "image"
-        ]
-        if _img_urls:
-            text += "\n" + "\n".join(f"[用户发送了图片: {u}]" for u in _img_urls if u)
+        # 图片附件：sub_type=1 为 QQ 内置表情，0 为真实图片（待视觉模型进一步分类）
+        _all_img_atts = [a["data"] for a in event.attachments if a.get("type") == "image"]
+        _emoji_atts = [a for a in _all_img_atts if a.get("sub_type", 0) == 1]
+        _img_atts = [a for a in _all_img_atts if a.get("sub_type", 0) != 1]
+        if _emoji_atts:
+            text += "\n" + "[表情]" * len(_emoji_atts)
+        if _img_atts:
+            text += "\n" + "[图片（需要视觉理解）]" * len(_img_atts)
+        # 下载 QQ 发来的文件，告诉 LLM 路径
+        _file_atts = [a["data"] for a in event.attachments if a.get("type") == "file"]
+        for _f in _file_atts:
+            _saved = await self._download_qq_file(_f, group_id=group_id)
+            if _saved:
+                text += f"\n[文件已保存到 uploads/{_saved.name}，可用 read_file 读取]"
+            else:
+                text += f"\n[文件 {_f.get('name', '未知')} 下载失败]"
         nick = event.sender.card or event.sender.nickname or str(qq)
         logger.info(f"群消息 {group_id} from {qq} at_bot={event.at_bot}: {text[:40]}")
 
@@ -455,8 +586,13 @@ class QQGateway:
         self._proactive.ensure_group(group_id)
         self._cache_group_name(group_id)
 
-        # 先保存用户消息（无论是否回复，都要记录以供主动发言参考）
-        self._save_message(session_key, "user", text, qq, nick)
+        # 保存用户消息，attachments 存真实图片 file_id（无论是否回复）
+        _att_records = [{"file": a.get("file") or a.get("file_id", ""), "sub_type": 0} for a in _img_atts]
+        _user_msg_id = self._save_message(session_key, "user", text, qq, nick, attachments=_att_records)
+
+        # 有真实图片时，后台立即描述/分类，更新 DB（不阻塞消息处理）
+        if _img_atts and _user_msg_id:
+            self._create_bg_task(self._bg_classify_and_save(_img_atts, _user_msg_id, session_key))
 
         # ── 任务管理命令（群聊，仅被 @ 时响应） ─────────────────────
         if event.at_bot:
@@ -514,7 +650,7 @@ class QQGateway:
             session_key=session_key,
             sender_qq=qq,
             group_id=group_id,
-            coro_factory=self._make_task_coro_factory(),
+            coro_factory=self._make_task_coro_factory(image_atts=_img_atts, user_msg_id=_user_msg_id),
         )
         logger.info(f"任务 {task.task_id} 已创建 (群 {group_id})")
 
@@ -522,8 +658,13 @@ class QQGateway:
     # 异步任务核心：工具调用循环（后台运行，不阻塞消息接收）
     # ──────────────────────────────────────────────
 
-    def _make_task_coro_factory(self):
-        # 将使用 ReActLoop 进行推理-行动循环（后续重构）
+    def _make_task_coro_factory(
+        self,
+        image_atts: List[Dict] = None,
+        user_msg_id: Optional[int] = None,
+        forced_level: Optional["PermLevel"] = None,
+        forced_route: Optional[str] = None,  # "LOCAL" / "CLOUD" / "PRO"
+    ):
         """返回一个 coro factory，用于 TaskPool.create_and_run"""
 
         async def _run(task: AsyncTask):
@@ -546,11 +687,9 @@ class QQGateway:
                 str(sender_qq),
             )
 
-            from ..model_layer import ModelLayer, ModelRole
-
             soul = self._read_soul()
             skills_section = load_skills_prompt(self._skills_dir)
-            level = self._get_effective_level(sender_qq)
+            level = forced_level if forced_level is not None else self._get_effective_level(sender_qq)
 
             local_adapter = self._router.get_available_adapter(
                 ModelLayer.BASIC, ModelRole.CHAT
@@ -558,6 +697,11 @@ class QQGateway:
             if local_adapter is None:
                 await self._task_manager.send_progress(task, "（模型不可用，任务失败）")
                 return "模型不可用"
+
+            # 专职视觉模型（仅用于图片描述/转述，不参与主流程路由）
+            vision_adapter = self._router.get_available_adapter(
+                ModelLayer.BASIC, ModelRole.VISION
+            )
 
             cloud_adapter = self._router.get_available_adapter(
                 ModelLayer.BRAIN, ModelRole.REASONING
@@ -584,6 +728,7 @@ class QQGateway:
                 target_id=group_id if is_group else sender_qq,
                 is_private=not is_group,
                 task=task,
+                plugin_manager=self._plugin_manager,
             )
 
             skill_ctx = SkillContext.from_gateway(
@@ -597,18 +742,25 @@ class QQGateway:
 
             try:
                 # ── 路由判断 ─────────────────────────────────────────
-                route = "LOCAL"
+                if forced_route:
+                    route = forced_route.upper()
+                    logger.info(f"任务 {task.task_id} 强制路由: {route}")
+                else:
+                  route = "LOCAL"
                 cloud_hint = False
-                if self._cloud_trigger_keywords and any(
-                    kw in user_text for kw in self._cloud_trigger_keywords
-                ):
-                    cloud_hint = True
-                if (
-                    self._cloud_trigger_min_chars
-                    and len(user_text) >= self._cloud_trigger_min_chars
-                ):
-                    cloud_hint = True
-                if router_adapter is not None:
+                if not forced_route:
+                  if self._cloud_trigger_keywords and any(
+                      kw in user_text for kw in self._cloud_trigger_keywords
+                  ):
+                      cloud_hint = True
+                  if (
+                      self._cloud_trigger_min_chars
+                      and len(user_text) >= self._cloud_trigger_min_chars
+                  ):
+                      cloud_hint = True
+                if not forced_route and router_adapter is not None:
+                    # 当前消息已在 _save_message 后存入 DB，_get_recent_messages
+                    # 拿到的最后一条就是当前消息，不需要再手动 append
                     routing_ctx = []
                     for r in self._get_recent_messages(
                         session_key, self._routing_context_limit
@@ -617,7 +769,6 @@ class QQGateway:
                         routing_ctx.append(
                             {"role": role, "content": r["content"][:120]}
                         )
-                    routing_ctx.append({"role": "user", "content": user_text})
 
                     try:
                         routing_decision = await asyncio.wait_for(
@@ -639,7 +790,8 @@ class QQGateway:
                             .strip()
                             .upper()
                         )
-                    except Exception:
+                    except Exception as _re:
+                        logger.debug(f"路由文本解析失败，降级 LOCAL: {_re}")
                         decision_text = "LOCAL"
 
                     if "PRO" in decision_text and pro_adapter is not None:
@@ -653,19 +805,39 @@ class QQGateway:
                     )
 
                 # ── 选定 adapter ──────────────────────────────────────
-                if route == "PRO":
+                if route == "PRO" and pro_adapter is not None:
                     active_adapter = pro_adapter
                     first_timeout = self._timeout_pro
-                elif route == "CLOUD":
+                elif route in ("PRO", "CLOUD") and cloud_adapter is not None:
                     active_adapter = cloud_adapter
                     first_timeout = self._timeout_cloud
+                    if route == "PRO":
+                        logger.warning("PRO adapter 不可用，降级到 CLOUD")
+                        route = "CLOUD"
                 else:
                     active_adapter = local_adapter
                     first_timeout = self._timeout_local
 
-                loop_max_tokens = getattr(
-                    getattr(active_adapter, "endpoint", None), "max_tokens", 8192
-                )
+                # 有图片时的处理策略：
+                # - active adapter 支持 vision → 直接附加图片（后面统一处理）
+                # - active adapter 不支持 vision，但 local 支持 →
+                #     先用 local 描述图片，把描述注入消息，再交给 active adapter
+                _img_desc: Optional[str] = None
+                _cur_atts: List[Dict] = list(image_atts) if image_atts else []
+                if _cur_atts:
+                    if "vision" not in active_adapter.endpoint.capabilities and vision_adapter is not None:
+                        logger.info(f"任务 {task.task_id} 含图片，用 vision 描述后交给 {route}")
+                        _desc = await self._describe_images(_cur_atts, vision_adapter)
+                        if _desc:
+                            _img_desc = _desc
+                            _cur_atts = []
+                        else:
+                            # 描述失败，直接让 vision 模型带图回答
+                            active_adapter = vision_adapter
+                            first_timeout = self._timeout_local
+                            route = "LOCAL"
+
+                loop_max_tokens = active_adapter.endpoint.max_tokens
 
                 is_local = active_adapter is local_adapter
 
@@ -713,30 +885,94 @@ class QQGateway:
                     if is_local
                     else TOOL_SCHEMAS
                 )
-                active_tools = get_tool_schemas_for_context(
-                    base_tools,
-                    skill_ctx.model_tier,
-                    skill_ctx.user_level,
-                    identity,
+                active_tools = (
+                    get_tool_schemas_for_context(
+                        base_tools,
+                        skill_ctx.model_tier,
+                        skill_ctx.user_level,
+                        identity,
+                        plugin_manager=self._plugin_manager,
+                    )
+                    if "tool_call" in active_adapter.endpoint.capabilities
+                    else []
                 )
 
                 messages = self._build_messages(session_key)
+                # 清掉 _build_messages 加的临时字段（历史图片用 DB 里的文字描述即可，不重复 fetch 原图）
+                for _m in messages:
+                    _m.pop("_attachments", None)
+                    _m.pop("_msg_id", None)
                 task.loop_messages = list(messages)
+
+                # 图片描述模式：把 local 生成的描述注入最后一条 user 消息，并回写 DB
+                if _img_desc:
+                    _img_repl = _img_desc if _img_desc.startswith("[表情") else f"[图片内容：{_img_desc}]"
+                    for _m in reversed(task.loop_messages):
+                        if _m["role"] == "user" and isinstance(_m.get("content"), str):
+                            _m["content"] = _m["content"].replace("[图片（需要视觉理解）]", _img_repl)
+                            break
+                    if user_msg_id:
+                        rows = self._get_recent_messages(session_key, 1)
+                        if rows:
+                            old = rows[-1]["content"]
+                            self._update_message_content(user_msg_id, old.replace("[图片（需要视觉理解）]", _img_repl))
+
+                if _cur_atts and "vision" in active_adapter.endpoint.capabilities:
+                    # Vision 路径：附加图片同时异步生成描述存 DB（用 vision_adapter，不阻塞主流程）
+                    await self._attach_images_to_last_msg(task.loop_messages, _cur_atts)
+                    if user_msg_id and vision_adapter is not None:
+                        async def _save_img_desc_to_db(atts, msg_id, skey):
+                            _d = await self._describe_images(atts, vision_adapter, timeout=120)
+                            if _d:
+                                _r = _d if _d.startswith("[表情") else f"[图片内容：{_d}]"
+                                rows = self._get_recent_messages(skey, 1)
+                                if rows:
+                                    old = rows[-1]["content"]
+                                    self._update_message_content(msg_id, old.replace("[图片（需要视觉理解）]", _r))
+                        self._create_bg_task(_save_img_desc_to_db(_cur_atts, user_msg_id, session_key))
 
                 if task.is_cancelled():
                     return "任务已取消"
 
                 try:
-                    response = await asyncio.wait_for(
-                        active_adapter.chat(
-                            task.loop_messages,
-                            system_prompt=system,
-                            tools=active_tools,
-                            max_tokens=loop_max_tokens,
-                        ),
-                        timeout=first_timeout,
+                    response = await active_adapter.chat(
+                        task.loop_messages,
+                        system_prompt=system,
+                        tools=active_tools,
+                        max_tokens=loop_max_tokens,
+                        request_timeout=first_timeout,
                     )
                 except asyncio.TimeoutError:
+                    # LOCAL 超时时尝试降级 CLOUD，而不是直接报错
+                    if active_adapter is not cloud_adapter and cloud_adapter is not None:
+                        logger.warning(f"任务 {task.task_id} {route} 超时，降级 CLOUD")
+                        try:
+                            _cloud_has_vision = "vision" in cloud_adapter.endpoint.capabilities
+                            _fb_msgs = []
+                            for _m in task.loop_messages:
+                                _c = _m.get("content", "")
+                                if isinstance(_c, list) and not _cloud_has_vision:
+                                    _c = " ".join(p["text"] for p in _c if p.get("type") == "text")
+                                _fb_msg = {k: v for k, v in _m.items() if k != "reasoning_content"}
+                                _fb_msg["content"] = _c
+                                _fb_msgs.append(_fb_msg)
+                            _cloud_system = self._build_system_prompt(
+                                session_key, nick, level, is_group, group_id, soul,
+                                skills_section, sender_qq=sender_qq, local=False,
+                            )
+                            _fb = await cloud_adapter.chat(
+                                _fb_msgs,
+                                system_prompt=_cloud_system,
+                                max_tokens=self._fallback_max_tokens_cloud,
+                                request_timeout=self._timeout_cloud,
+                            )
+                            _fb_text = self._clean_reply(_fb.content or "")
+                            if _fb_text.strip():
+                                task.loop_messages.append({"role": "assistant", "content": _fb_text})
+                                await self._task_manager.send_progress(task, _fb_text)
+                                return _fb_text
+                        except Exception as _fe:
+                            logger.warning(f"任务 {task.task_id} CLOUD 降级失败: {_fe}")
                     timeout_msg = (
                         f"模型响应超时（{first_timeout}秒），请稍后重试或简化问题~"
                     )
@@ -814,24 +1050,73 @@ class QQGateway:
                         )
 
                     try:
-                        response = await asyncio.wait_for(
-                            active_adapter.chat(
-                                task.loop_messages,
-                                system_prompt=system,
-                                tools=active_tools,
-                                max_tokens=loop_max_tokens,
-                            ),
-                            timeout=first_timeout,
+                        response = await active_adapter.chat(
+                            task.loop_messages,
+                            system_prompt=system,
+                            tools=active_tools,
+                            max_tokens=loop_max_tokens,
+                            request_timeout=first_timeout,
                         )
                     except asyncio.TimeoutError:
                         logger.warning(f"任务 {task.task_id} 工具循环超时")
                         break
 
+                # 若循环跑满退出时模型仍在调工具，response.content 是中间规划文字
+                # 补一次无工具的请求，让模型给出真正的最终回答
+                if response.tool_calls:
+                    task.loop_messages.append({
+                        "role": "assistant",
+                        "content": response.content or "",
+                        "tool_calls": [
+                            {"id": tc.get("id", f"call_{i}"), "type": "function",
+                             "function": {"name": tc.get("name", ""),
+                                          "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False)}}
+                            for i, tc in enumerate(response.tool_calls)
+                        ],
+                    })
+                    task.loop_messages.append({
+                        "role": "user",
+                        "content": "【系统】工具调用次数已达上限，请根据已获取的信息直接给出最终回答，不要再调用任何工具。",
+                    })
+                    try:
+                        response = await active_adapter.chat(
+                            task.loop_messages,
+                            system_prompt=system,
+                            max_tokens=loop_max_tokens,
+                            request_timeout=first_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+
                 final_text = self._clean_reply(response.content or "")
 
                 if not final_text.strip():
-                    final_text = "（处理完成，但没有生成回复内容）"
-                    logger.warning(f"任务 {task.task_id} 空结果")
+                    logger.warning(
+                        f"任务 {task.task_id} {route} 空结果 "
+                        f"(raw={response.content!r:.80}), 降级 CLOUD"
+                    )
+                    if cloud_adapter is not None and active_adapter is not cloud_adapter:
+                        try:
+                            _cloud_has_vision = "vision" in cloud_adapter.endpoint.capabilities
+                            _fb_msgs = []
+                            for _m in task.loop_messages:
+                                _c = _m.get("content", "")
+                                if isinstance(_c, list) and not _cloud_has_vision:
+                                    _c = " ".join(p["text"] for p in _c if p.get("type") == "text")
+                                _fb_msg = {k: v for k, v in _m.items() if k != "reasoning_content"}
+                                _fb_msg["content"] = _c
+                                _fb_msgs.append(_fb_msg)
+                            _fb = await cloud_adapter.chat(
+                                _fb_msgs,
+                                system_prompt=system,
+                                max_tokens=self._fallback_max_tokens_cloud,
+                                request_timeout=self._timeout_cloud,
+                            )
+                            final_text = self._clean_reply(_fb.content or "")
+                        except Exception as _fe:
+                            logger.warning(f"任务 {task.task_id} CLOUD 降级失败: {_fe}")
+                    if not final_text.strip():
+                        return ""
 
                 task.loop_messages.append(
                     {
@@ -840,10 +1125,26 @@ class QQGateway:
                     }
                 )
 
+                # ── LaTeX 公式处理 ────────────────────────────────────
+                # 若回复含 $$...$$ 公式，先发带占位符的文字，再逐个发图
+                from .formula import extract_formulas, strip_formula_markers, send_formulas_from_text
+                _formulas = extract_formulas(final_text) if "$$" in final_text else []
+                _display_text = strip_formula_markers(final_text) if _formulas else final_text
+
                 try:
-                    await self._task_manager.send_progress(task, final_text)
+                    await self._task_manager.send_progress(task, _display_text)
                 except Exception as send_err:
                     logger.error(f"任务 {task.task_id} 发送结果失败: {send_err}")
+
+                if _formulas:
+                    _target_id = group_id if is_group else sender_qq
+                    try:
+                        await send_formulas_from_text(
+                            final_text, self._napcat, is_group, _target_id,
+                            self._formula_cache_dir,
+                        )
+                    except Exception as _fe:
+                        logger.error(f"任务 {task.task_id} 公式发送失败: {_fe}")
 
                 self._save_message(session_key, "assistant", final_text)
                 self._maybe_compress(session_key)
@@ -880,7 +1181,6 @@ class QQGateway:
         if level == PermLevel.BLACKLIST:
             return
 
-        # 获取昵称
         info = await self._napcat.get_stranger_info(qq)
         nick = info.get("nickname") or str(qq)
 
@@ -971,305 +1271,9 @@ class QQGateway:
                     logger.info(f"被踢出群 {group_id}，停止主动发言")
 
     # ──────────────────────────────────────────────
-    # 核心：生成回复
-    # ──────────────────────────────────────────────
-
-    async def _generate_reply(
-        self,
-        session_key: str,
-        user_text: str,
-        nick: str,
-        level: PermLevel,
-        is_group: bool,
-        group_id: int = 0,
-        at_bot: bool = False,
-        sender_qq: int = 0,
-        send_progress=None,  # async def(text) — 发送中间进度消息
-    ) -> str:
-        from ..model_layer import ModelLayer, ModelRole
-
-        soul = self._read_soul()
-        skills_section = load_skills_prompt(self._skills_dir)
-        messages = self._build_messages(session_key)
-
-        local_adapter = self._router.get_available_adapter(
-            ModelLayer.BASIC, ModelRole.CHAT
-        )
-        if local_adapter is None:
-            return "（模型不可用，请稍后再试）"
-
-        cloud_adapter = self._router.get_available_adapter(
-            ModelLayer.BRAIN, ModelRole.REASONING
-        )
-        pro_adapter = self._router.get_available_adapter(
-            ModelLayer.PRO, ModelRole.REASONING
-        )
-        router_adapter = self._router.get_available_adapter(
-            ModelLayer.BASIC, ModelRole.ROUTER
-        )
-
-        identity = self._resolve_identity(sender_qq) if sender_qq else ""
-        tool_executor = QQToolExecutor(
-            db_path=self._db_path,
-            soul_path=self._soul_path,
-            data_dir=self._data_dir,
-            session_key=session_key,
-            sender_qq=sender_qq,
-            level=level,
-            identity=identity,
-            proxy=self._proxy,
-            napcat=self._napcat,
-            tts=self._tts,
-            target_id=group_id if is_group else sender_qq,
-            is_private=not is_group,
-        )
-
-        skill_ctx = SkillContext.from_gateway(
-            route="LOCAL",
-            perm_level=level,
-            identity=identity,
-            session_key=session_key,
-            sender_qq=sender_qq,
-            tool_executor=tool_executor,
-        )
-
-        try:
-            # ── 路由判断：router 一次输出 LOCAL / CLOUD / PRO ───────────
-            route = "LOCAL"
-            cloud_hint = False
-            if self._cloud_trigger_keywords and any(
-                kw in user_text for kw in self._cloud_trigger_keywords
-            ):
-                cloud_hint = True
-            if (
-                self._cloud_trigger_min_chars
-                and len(user_text) >= self._cloud_trigger_min_chars
-            ):
-                cloud_hint = True
-            if router_adapter is not None:
-                routing_ctx = []
-                for r in self._get_recent_messages(
-                    session_key, self._routing_context_limit
-                ):
-                    role = "user" if r["role"] == "user" else "assistant"
-                    routing_ctx.append({"role": role, "content": r["content"][:120]})
-                routing_ctx.append({"role": "user", "content": user_text})
-
-                try:
-                    routing_decision = await asyncio.wait_for(
-                        router_adapter.chat(
-                            routing_ctx,
-                            system_prompt=self._build_router_prompt(),
-                            max_tokens=getattr(
-                                getattr(router_adapter, "endpoint", None),
-                                "max_tokens",
-                                20,
-                            ),
-                        ),
-                        timeout=self._timeout_routing,
-                    )
-                    raw_decision = (routing_decision.content or "").strip()
-                    raw_decision = re.sub(
-                        r"<think>.*?</think>", "", raw_decision, flags=re.DOTALL
-                    ).strip()
-                    decision_text = raw_decision.upper()
-                except (TimeoutError, asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"路由判断失败，降级到 LOCAL: {e}")
-                    decision_text = "LOCAL"
-                if "PRO" in decision_text and pro_adapter is not None:
-                    route = "PRO"
-                elif (
-                    "CLOUD" in decision_text or cloud_hint
-                ) and cloud_adapter is not None:
-                    route = "CLOUD"
-                logger.info(
-                    f"路由决策: {decision_text!r} cloud_hint={cloud_hint} → {route}"
-                )
-
-            # ── 选定 adapter ─────────────────────────────────────────────
-            if route == "PRO":
-                active_adapter = pro_adapter
-                first_timeout = self._timeout_pro
-                loop_max_tokens = getattr(
-                    getattr(active_adapter, "endpoint", None),
-                    "max_tokens",
-                    self._fallback_max_tokens_pro,
-                )
-            elif route == "CLOUD":
-                active_adapter = cloud_adapter
-                first_timeout = self._timeout_cloud
-                loop_max_tokens = getattr(
-                    getattr(active_adapter, "endpoint", None),
-                    "max_tokens",
-                    self._fallback_max_tokens_cloud,
-                )
-            else:
-                active_adapter = local_adapter
-                first_timeout = self._timeout_local
-                loop_max_tokens = getattr(
-                    getattr(active_adapter, "endpoint", None),
-                    "max_tokens",
-                    self._fallback_max_tokens_local,
-                )
-
-            # 本地模型：精简 system prompt + 轻量工具（避免小模型被工具指令带跑）
-            is_local = active_adapter is local_adapter
-
-            # 更新 SkillContext
-            skill_ctx.model_tier = ModelTier.from_route(route)
-            user_lv = (
-                UserLevel.OWNER
-                if level == PermLevel.OWNER
-                else (
-                    UserLevel.ADMIN if level == PermLevel.ADMIN else UserLevel.STRANGER
-                )
-            )
-            skill_ctx.user_level = user_lv
-
-            skills_section = build_context_skills_prompt(
-                self._skills_dir,
-                skill_ctx.model_tier,
-                skill_ctx.user_level,
-                identity,
-            )
-
-            system = self._build_system_prompt(
-                session_key,
-                nick,
-                level,
-                is_group,
-                group_id,
-                soul,
-                skills_section,
-                sender_qq=sender_qq,
-                local=is_local,
-            )
-            LOCAL_OK_TOOLS = {"search_memory", "recall_conversations"}
-            base_tools = (
-                [
-                    t
-                    for t in TOOL_SCHEMAS
-                    if t.get("function", {}).get("name") in LOCAL_OK_TOOLS
-                ]
-                if is_local
-                else TOOL_SCHEMAS
-            )
-            active_tools = get_tool_schemas_for_context(
-                base_tools,
-                skill_ctx.model_tier,
-                skill_ctx.user_level,
-                identity,
-            )
-
-            response = await asyncio.wait_for(
-                active_adapter.chat(
-                    messages,
-                    system_prompt=system,
-                    tools=active_tools,
-                    max_tokens=loop_max_tokens,
-                ),
-                timeout=first_timeout,
-            )
-
-            # ── 工具调用循环（最多 10 轮，始终使用同一 adapter）──────────
-            loop_messages = list(messages)
-            search_count = 0
-            wrote_something = False
-            WRITE_TOOLS = {"write_file", "add_memory", "update_soul"}
-
-            for _ in range(self._max_tool_loops):
-                tool_calls = response.tool_calls
-                if not tool_calls:
-                    break
-
-                # 把助手这轮（含 tool_calls）加入上下文
-                # 推理模型（如 deepseek-v4-flash）需要把 reasoning_content 也传回去
-                asst_msg: Dict = {
-                    "role": "assistant",
-                    "content": response.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.get("id", f"call_{i}"),
-                            "type": "function",
-                            "function": {
-                                "name": tc.get("name", ""),
-                                "arguments": json.dumps(
-                                    tc.get("arguments", {}), ensure_ascii=False
-                                ),
-                            },
-                        }
-                        for i, tc in enumerate(tool_calls)
-                    ],
-                }
-                if response.reasoning_content:
-                    asst_msg["reasoning_content"] = response.reasoning_content
-                loop_messages.append(asst_msg)
-
-                for tc in tool_calls:
-                    name = tc.get("name", "")
-                    args = tc.get("arguments", {})
-
-                    if name == "web_search":
-                        search_count += 1
-                    elif name in WRITE_TOOLS:
-                        wrote_something = True
-
-                    # 展示进度消息
-                    progress_fn = TOOL_PROGRESS_MSG.get(name)
-                    if progress_fn and send_progress:
-                        msg = progress_fn(args)
-                        if msg:
-                            await send_progress(msg)
-
-                    result = await tool_executor.execute(name, args)
-                    logger.info(f"工具调用 {name}: {str(args)[:60]} → {result[:60]}")
-
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.get("id", ""),
-                            "content": result,
-                        }
-                    )
-
-                # 搜索次数超阈值且还没写：注入强制提示，阻止继续搜
-                if (
-                    search_count >= self._max_searches_before_write
-                    and not wrote_something
-                ):
-                    loop_messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "【系统】你已经搜索了足够多的资料，不要再继续搜索了。"
-                                "现在必须立刻调用 write_file 或 add_memory 把搜到的内容保存下来。"
-                                "不能只用文字回复，必须调工具写入。"
-                            ),
-                        }
-                    )
-
-                # 工具结果喂回同一个 adapter（带 tools，让模型可以继续调用工具）
-                response = await asyncio.wait_for(
-                    active_adapter.chat(
-                        loop_messages,
-                        system_prompt=system,
-                        tools=active_tools,
-                        max_tokens=loop_max_tokens,
-                    ),
-                    timeout=first_timeout,
-                )
-
-            return self._clean_reply(response.content or "")
-
-        except Exception as e:
-            logger.error(f"LLM 调用失败: {e}", exc_info=True)
-            return ""
-
     @staticmethod
     def _clean_reply(text: str) -> str:
         """清理不应发送给用户的内容（残留工具调用标签等）。"""
-        import re
-
         # 移除任何残留的 DSML 工具调用块
         P = "｜｜DSML｜｜"
         tc_open = f"<{P}tool_calls>"
@@ -1281,9 +1285,286 @@ class QQGateway:
                 text = text[:s]
                 break
             text = text[:s] + text[e + len(tc_close) :]
-        # 移除空的 <think>...</think> 或其他推理标签
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        return text.strip()
+        # 移除 <think>...</think> 推理块；若正文剩余为空（Qwen3 thinking 模型），
+        # 则把思考内容本身作为回复，避免发出空消息
+        _think_re = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+        think_contents = _think_re.findall(text)
+        cleaned = _think_re.sub("", text).strip()
+        if not cleaned and think_contents:
+            cleaned = think_contents[-1].strip()
+        return cleaned
+
+    async def _describe_images(
+        self, image_atts: List[Dict], vision_adapter, timeout: float = 120
+    ) -> Optional[str]:
+        """用 vision adapter 把图片描述成文字，供非 vision 模型使用。"""
+        content = [
+            {"type": "text", "text": (
+                "判断这张图片是【表情包/贴纸/reaction图】还是【真实图片/截图/照片/文字/图表】。\n"
+                "- 若是表情包/贴纸：只输出 [表情:简短描述表情含义]，例如 [表情:捂脸大笑]\n"
+                "- 若是真实图片：简洁中文描述内容，重点关注文字、代码、图表、关键物体，不超过200字\n"
+                "不要加任何前缀或解释，直接输出结果。"
+            )}
+        ]
+        b64_list = await asyncio.gather(*[self._att_to_b64(att) for att in image_atts])
+        for b64 in b64_list:
+            if b64:
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+        if len(content) == 1:
+            return None
+
+        try:
+            resp = await vision_adapter.chat(
+                [{"role": "user", "content": content}],
+                system_prompt="你是图片描述助手，只输出描述文字，不加任何前缀。",
+                max_tokens=3000,
+                allow_thinking=True,  # 描述/转述允许思考，reasoning_content fallback 兜底
+                request_timeout=timeout,
+            )
+            desc = self._clean_reply(resp.content or "").strip()
+            desc = self._extract_img_desc(desc)
+            logger.info(f"图片描述完成: raw={resp.content!r:.120} → {desc[:60]!r}")
+            return desc or None
+        except Exception as e:
+            logger.warning(f"图片描述失败: {e}")
+            return None
+
+    @staticmethod
+    def _extract_img_desc(text: str) -> str:
+        """从 reasoning_content fallback 的原始思考文本里提取实际图片描述。
+        若 content 字段正常（模型直接输出），文本已是干净描述，直接返回。
+        若是思考过程（以元描述开头），则提取实质内容。
+        """
+        if not text:
+            return text
+
+        # 已经是期望格式（表情包 or 纯描述文字，无思考前缀）
+        if text.startswith("[表情"):
+            return text
+        META_PREFIXES = (
+            "这个任务", "我需要", "让我", "首先", "接下来", "然后来",
+            "好的", "好，", "嗯，", "根据", "现在我", "我来",
+        )
+        if not any(text.startswith(p) for p in META_PREFIXES) and "**" not in text[:40]:
+            return text
+
+        # 思考文本里找 [表情:...] 标记
+        m = re.search(r'\[表情[：:][^\]]*\]', text)
+        if m:
+            return m.group()
+
+        # 找结论行：模型通常在末尾写"输出：xxx"/"结论：xxx"/"因此输出：xxx"
+        conclusion = re.search(
+            r'(?:最终输出|最终答案|输出结果|结论|因此输出|所以输出)[：:]\s*(.+?)(?:\n|$)',
+            text,
+        )
+        if conclusion:
+            result = conclusion.group(1).strip()
+            if 8 < len(result) < 300:
+                return result
+
+        # 剥掉 markdown，提取 bullet 点里的实质内容
+        cleaned_lines = []
+        for line in text.split('\n'):
+            line = re.sub(r'^\s*[\*\-]\s*', '', line)        # bullet marker
+            line = re.sub(r'\*\*[^*]*\*\*[：:：]?\s*', '', line)  # **bold**：
+            line = re.sub(r'^\s*\d+\.\s*', '', line)          # 1. 编号
+            line = line.strip()
+            if not line or len(line) < 8:
+                continue
+            if any(line.startswith(p) for p in META_PREFIXES + ("分析", "判断", "综上", "总结")):
+                continue
+            cleaned_lines.append(line)
+
+        if cleaned_lines:
+            result = '。'.join(cleaned_lines[:4])
+            return result[:250] if len(result) > 250 else result
+
+        return ""
+
+    async def _bg_classify_and_save(self, atts: List[Dict], msg_id: int, session_key: str) -> None:
+        """后台：用视觉模型描述/分类图片，并把结果更新到 DB。"""
+        vision_adapter = self._router.get_available_adapter(ModelLayer.BASIC, ModelRole.VISION)
+        if vision_adapter is None:
+            return
+        _d = await self._describe_images(atts, vision_adapter, timeout=120)
+        if not _d:
+            return
+        rows = self._get_recent_messages(session_key, 3)
+        row = next((r for r in reversed(rows) if r.get("id") == msg_id), None)
+        if row:
+            # 模型输出 [表情:xxx] 时直接用，否则包成 [图片内容：xxx]
+            replacement = _d if _d.startswith("[表情") else f"[图片内容：{_d}]"
+            new_c = row["content"].replace("[图片（需要视觉理解）]", replacement, 1)
+            self._update_message_content(msg_id, new_c)
+
+    async def _att_to_b64(self, att: Dict) -> Optional[str]:
+        """
+        把一个 OneBot 图片 attachment data dict 转为 base64 字节串。
+        优先用 NapCat get_image API 取本地缓存文件，失败才尝试 HTTP URL。
+        """
+        import aiohttp
+
+        # 1. NapCat get_image → 本地文件路径
+        file_id = att.get("file") or att.get("file_id") or att.get("file_unique")
+        if file_id:
+            try:
+                result = await self._napcat.call_api("get_file", {"file": file_id}, timeout=8)
+                local_path = (
+                    (result.get("data") or {}).get("file")
+                    or result.get("file")
+                )
+                if local_path:
+                    p = Path(local_path)
+                    # NapCat reports Docker-internal path; remap to host path unconditionally
+                    if str(p).startswith("/root/.config/QQ/"):
+                        p = Path("/home/qwq/napcat_xiaomeng/qq_volume") / str(p)[len("/root/.config/QQ/"):]
+                    if p.exists():
+                        b64 = base64.b64encode(p.read_bytes()).decode()
+                        logger.info(f"get_file 本地读取 ({len(b64)//1024}KB): {p.name}")
+                        return b64
+                    logger.warning(f"get_file 路径不存在: {p}")
+                else:
+                    logger.warning(f"get_file 路径为空: result={result!r:.200}")
+            except Exception as e:
+                logger.warning(f"get_file 失败 ({str(file_id)[:40]}): {e}")
+
+        # 2. 直接本地路径（file 字段本身就是路径）
+        if file_id and (file_id.startswith("/") or (len(file_id) > 2 and file_id[1] == ":")):
+            try:
+                p = Path(file_id)
+                if p.exists():
+                    return base64.b64encode(p.read_bytes()).decode()
+            except Exception:
+                pass
+
+        # 3. HTTP URL（最后兜底，QQ CDN 在当前服务器可能无法访问）
+        url = att.get("url")
+        if url:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            b64 = base64.b64encode(data).decode()
+                            logger.debug(f"HTTP 下载图片 ({len(b64)//1024}KB): {url[:60]}")
+                            return b64
+                        logger.warning(f"图片 HTTP {resp.status}: {url[:60]}")
+            except Exception as e:
+                logger.warning(f"图片 HTTP 下载失败: {e}")
+
+        return None
+
+    async def _download_qq_file(self, att_data: Dict, group_id: int = 0) -> Optional[Path]:
+        """下载 QQ 发来的非图片文件到 data/uploads/，返回本地绝对路径（失败返回 None）。"""
+        import shutil
+        import aiohttp as _aiohttp
+
+        file_id = att_data.get("file_id") or att_data.get("file") or ""
+        file_name = att_data.get("name") or att_data.get("file_name") or att_data.get("file") or "unknown_file"
+        file_name = Path(file_name).name or "unknown_file"
+
+        uploads_dir = self._data_dir / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        dest = uploads_dir / file_name
+
+        async def _http_download(url: str) -> bool:
+            try:
+                async with _aiohttp.ClientSession() as sess:
+                    async with sess.get(url, timeout=_aiohttp.ClientTimeout(total=60)) as resp:
+                        if resp.status == 200:
+                            dest.write_bytes(await resp.read())
+                            logger.info(f"QQ 文件已保存(HTTP): {dest.name} ({dest.stat().st_size // 1024}KB)")
+                            return True
+                        logger.warning(f"HTTP 下载失败 {resp.status}: {url[:80]}")
+            except Exception as e:
+                logger.warning(f"HTTP 下载异常: {e}")
+            return False
+
+        try:
+            # 步骤1：群文件用 get_group_file_url 拿下载链接
+            if group_id and file_id:
+                try:
+                    r = await self._napcat.call_api(
+                        "get_group_file_url",
+                        {"group_id": group_id, "file_id": file_id},
+                        timeout=10,
+                    )
+                    url = (r.get("data") or {}).get("url") or r.get("url", "")
+                    if url and await _http_download(url):
+                        return dest
+                except Exception as e:
+                    logger.debug(f"get_group_file_url 失败: {e}")
+
+            # 步骤2：get_file（enableLocalFile2Url=true 时直接返回 base64）
+            result = await self._napcat.call_api("get_file", {"file": file_id}, timeout=30)
+            data = result.get("data") or {}
+            b64_content = data.get("base64") or result.get("base64", "")
+            local_path = data.get("file") or result.get("file", "")
+            url = data.get("url") or result.get("url", "") or att_data.get("url", "")
+
+            if b64_content:
+                import base64 as _b64
+                dest.write_bytes(_b64.b64decode(b64_content))
+                logger.info(f"QQ 文件已保存(base64): {dest.name} ({dest.stat().st_size // 1024}KB)")
+                return dest
+
+            if url and await _http_download(url):
+                return dest
+
+            if local_path:
+                p = Path(local_path)
+                if str(p).startswith("/root/.config/QQ/"):
+                    p = Path("/home/qwq/napcat_xiaomeng/qq_volume") / str(p)[len("/root/.config/QQ/"):]
+                    if p.exists():
+                        shutil.copy2(p, dest)
+                        logger.info(f"QQ 文件已保存(挂载卷): {dest.name}")
+                        return dest
+                # 尝试 docker cp
+                proc = await asyncio.create_subprocess_exec(
+                    "docker", "cp", f"xiaomeng-napcat:{local_path}", str(dest),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                if proc.returncode == 0 and dest.exists():
+                    logger.info(f"QQ 文件已保存(docker cp): {dest.name}")
+                    return dest
+                logger.debug(f"docker cp 失败: {stderr.decode()[:100]}")
+
+            logger.warning(f"所有下载方式均失败，file_id={file_id}, result={result!r:.200}")
+        except Exception as e:
+            logger.warning(f"QQ 文件下载失败 ({file_name}): {e}")
+        return None
+
+    async def _attach_images_to_last_msg(
+        self, messages: List[Dict], image_atts: List[Dict]
+    ) -> None:
+        """把 image_atts 转为 base64 后附加到 messages 中最后一条 user 消息，转为 vision 格式。"""
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] != "user":
+                continue
+            text = messages[i]["content"]
+            if not isinstance(text, str):
+                break
+            text = re.sub(r"(\[图片（需要视觉理解）\])+", "", text).rstrip()
+            content: List[Dict] = [{"type": "text", "text": text}]
+            b64_list = await asyncio.gather(*[self._att_to_b64(att) for att in image_atts])
+            for att, b64 in zip(image_atts, b64_list):
+                if b64 is None:
+                    logger.warning(f"跳过无法获取的图片: {att.get('file', '')[:60]}")
+                    continue
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+            if len(content) > 1:
+                messages[i]["content"] = content
+                logger.info(f"vision 消息：{len(content)-1} 张图片已附加")
+            break
 
     def _read_soul(self) -> str:
         """每次调用都从文件读取，改了立即生效。"""
@@ -1437,6 +1718,7 @@ class QQGateway:
 - 日常聊天控制在 1~3 句话以内，不要啰嗦
 - 不要重复对方说过的话
 - 如果对方在群里 @ 你，正常回复
+- 历史消息中可能包含图片内容（标注为 [图片内容：...]），仅作为上下文参考；用户没有主动提及时，不要主动评论历史图片
 """
 
     def _build_messages(self, session_key: str) -> List[Dict]:
@@ -1447,10 +1729,36 @@ class QQGateway:
             content = r["content"]
             if role == "user":
                 sender_name = r.get("sender_name") or "对方"
-                msgs.append({"role": "user", "content": f"{sender_name}: {content}"})
+                msgs.append({
+                    "role": "user",
+                    "content": f"{sender_name}: {content}",
+                    "_attachments": json.loads(r.get("attachments") or "[]"),
+                    "_msg_id": r.get("id"),
+                })
             else:
                 msgs.append({"role": "assistant", "content": content})
         return msgs
+
+    async def _inject_history_images(self, msgs: List[Dict], vision_adapter) -> List[Dict]:
+        """为 vision 模型把最近 N 条有图的历史消息转成 vision 格式，其余消息保持文本。"""
+        _MAX_HIST_IMGS = 3  # 最多回溯 3 条含图消息，避免 token 过多
+        img_count = 0
+        result = []
+        for msg in reversed(msgs):
+            atts = msg.pop("_attachments", [])
+            msg.pop("_msg_id", None)
+            if atts and img_count < _MAX_HIST_IMGS and msg.get("role") == "user":
+                b64_list = await asyncio.gather(*[self._att_to_b64(a) for a in atts])
+                valid = [b for b in b64_list if b]
+                if valid:
+                    content_list = [{"type": "text", "text": msg["content"]}]
+                    for b64 in valid:
+                        content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+                    msg = {**msg, "content": content_list}
+                    img_count += 1
+            result.append(msg)
+        result.reverse()
+        return result
 
     # ──────────────────────────────────────────────
     # 决策辅助
@@ -1495,6 +1803,19 @@ class QQGateway:
     # 记忆管理
     # ──────────────────────────────────────────────
 
+    def _create_bg_task(self, coro) -> asyncio.Task:
+        """创建后台任务并保持强引用，防止 GC 取消，同时记录未捕获异常。"""
+        t = asyncio.create_task(coro)
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+
+        def _log_exc(task: asyncio.Task):
+            if not task.cancelled() and task.exception():
+                logger.warning(f"后台任务异常: {task.exception()}")
+
+        t.add_done_callback(_log_exc)
+        return t
+
     def _save_message(
         self,
         session_key: str,
@@ -1502,46 +1823,63 @@ class QQGateway:
         content: str,
         sender_qq: int = None,
         sender_name: str = None,
-    ) -> None:
+        attachments: list = None,
+    ) -> Optional[int]:
+        conn = sqlite3.connect(self._db_path)
         try:
-            conn = sqlite3.connect(self._db_path)
-            conn.execute(
-                """INSERT INTO messages (session_key, role, sender_qq, sender_name, content, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+            cur = conn.execute(
+                """INSERT INTO messages (session_key, role, sender_qq, sender_name, content, attachments, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_key,
                     role,
                     sender_qq,
                     sender_name,
                     content,
+                    json.dumps(attachments or [], ensure_ascii=False),
                     datetime.now().isoformat(),
                 ),
             )
             conn.commit()
-            conn.close()
+            return cur.lastrowid
         except Exception as e:
             logger.error(f"保存消息失败: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def _update_message_content(self, msg_id: int, content: str) -> None:
+        conn = sqlite3.connect(self._db_path)
+        try:
+            conn.execute("UPDATE messages SET content=? WHERE id=?", (content, msg_id))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"更新消息失败: {e}")
+        finally:
+            conn.close()
 
     def _get_recent_messages(self, session_key: str, limit: int = 30) -> List[dict]:
+        conn = sqlite3.connect(self._db_path)
         try:
-            conn = sqlite3.connect(self._db_path)
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute(
-                """SELECT role, sender_qq, sender_name, content, created_at
+                """SELECT id, role, sender_qq, sender_name, content, attachments, created_at
                    FROM messages WHERE session_key=?
                    ORDER BY id DESC LIMIT ?""",
                 (session_key, limit),
             )
             rows = [dict(r) for r in c.fetchall()]
-            conn.close()
             return list(reversed(rows))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"读取最近消息失败 ({session_key}): {e}")
             return []
+        finally:
+            conn.close()
 
     def _get_long_term_memory(self, session_key: str, limit: int = 5) -> str:
+        conn = sqlite3.connect(self._db_path)
         try:
-            conn = sqlite3.connect(self._db_path)
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute(
@@ -1550,26 +1888,30 @@ class QQGateway:
                 (session_key, limit),
             )
             rows = [r["content"] for r in c.fetchall()]
-            conn.close()
             return "\n".join(rows)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"读取长期记忆失败 ({session_key}): {e}")
             return ""
+        finally:
+            conn.close()
 
     def _maybe_compress(self, session_key: str) -> None:
         """异步触发记忆压缩"""
+        conn = sqlite3.connect(self._db_path)
         try:
-            conn = sqlite3.connect(self._db_path)
             c = conn.cursor()
             c.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_key=?", (session_key,)
             )
             count = c.fetchone()[0]
-            conn.close()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"检查压缩阈值失败 ({session_key}): {e}")
             return
+        finally:
+            conn.close()
 
         if count > 0 and count % self._compress_every == 0:
-            asyncio.create_task(self._compress_memory(session_key))
+            self._create_bg_task(self._compress_memory(session_key))
 
     async def _compress_memory(self, session_key: str) -> None:
         """将旧消息压缩为长期记忆摘要，同步写到 MEMORY.md，并触发 soul 反思。"""
@@ -1726,10 +2068,10 @@ class QQGateway:
 
     def _load_identity_links(self) -> dict:
         """
-        读取 identity_links.json，兼容两种格式：
+        读取 identity_links.json，兼容三种格式，统一返回 {str(qq): identity_name}。
           格式 A（原始）: {"links": {"qq:3797723137": "owner"}}
           格式 B（简洁）: {"3797723137": "owner"}
-        统一返回 {str(qq): identity_name} 的平铺字典。
+          格式 v2（当前）: {"_schema":"v2", "owner": {"qq_list":[...], "level":"owner"}, ...}
         """
         try:
             if not self._identity_links_path.exists():
@@ -1737,19 +2079,27 @@ class QQGateway:
             data = json.loads(self._identity_links_path.read_text(encoding="utf-8"))
             result = {}
 
+            # 格式 v2：有 _schema 字段，结构为 {identity_name: {qq_list: [...]}}
+            if data.get("_schema") == "v2":
+                for identity_name, info in data.items():
+                    if identity_name.startswith("_") or not isinstance(info, dict):
+                        continue
+                    for qq in info.get("qq_list", []):
+                        result[str(qq)] = identity_name
+                return result
+
             # 格式 A：有 links 键
             if "links" in data and isinstance(data["links"], dict):
                 for k, v in data["links"].items():
                     if not isinstance(v, str):
                         continue
-                    # k 可能是 "qq:12345" 或 "feishu:xxx"
                     platform_id = k.split(":", 1)[1] if ":" in k else k
                     result[platform_id] = v
                 return result
 
             # 格式 B：直接 QQ 号 → identity（可能是字符串或 dict）
             for k, v in data.items():
-                if k.startswith("_"):  # 忽略注释字段
+                if k.startswith("_"):
                     continue
                 if isinstance(v, str):
                     result[k] = v
@@ -1898,6 +2248,12 @@ class QQGateway:
         conn = sqlite3.connect(self._db_path)
         conn.executescript(SCHEMA)
         conn.execute("PRAGMA journal_mode=WAL")
+        # 迁移：给旧表加 attachments 列
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            conn.commit()
+        except Exception:
+            pass  # 列已存在
         conn.commit()
         conn.close()
         logger.info(f"数据库已初始化: {self._db_path}")
@@ -1933,13 +2289,15 @@ class QQGateway:
                 proxy=m.get("proxy"),
                 num_ctx=m.get("num_ctx"),
                 provider=provider,
+                thinking=m.get("thinking"),
+                capabilities=m.get("capabilities", []),
             )
             router.register_model(endpoint)
         return router
 
     def _cache_group_name(self, group_id: int) -> None:
         """尝试从 NapCat 获取群名并缓存（异步，不阻塞）"""
-        asyncio.create_task(self._fetch_and_cache_group_name(group_id))
+        self._create_bg_task(self._fetch_and_cache_group_name(group_id))
 
     async def _fetch_and_cache_group_name(self, group_id: int) -> None:
         try:

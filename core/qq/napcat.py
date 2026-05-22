@@ -152,18 +152,24 @@ class NapCatClient:
             headers["Authorization"] = f"Bearer {self._token}"
 
         logger.info(f"连接 NapCat: {self._url}")
+        # websockets >= 14 renamed extra_headers → additional_headers
+        ws_version = tuple(int(x) for x in websockets.__version__.split(".")[:2])
+        header_kwarg = "additional_headers" if ws_version >= (14, 0) else "extra_headers"
         async with websockets.connect(
-            self._url, extra_headers=headers, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout
+            self._url, **{header_kwarg: headers}, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout
         ) as ws:
             self._ws = ws
             logger.info("NapCat 已连接")
-            # 获取 self_id
-            try:
-                info = await self.get_login_info()
-                self._self_id = info.get("user_id")
-                logger.info(f"Bot QQ: {self._self_id}")
-            except Exception:
-                pass
+
+            # 获取 self_id — 作为 task 与消息循环并发，避免死锁
+            async def _fetch_self_id():
+                try:
+                    info = await self.get_login_info()
+                    self._self_id = info.get("user_id")
+                    logger.info(f"Bot QQ: {self._self_id}")
+                except Exception:
+                    pass
+            asyncio.create_task(_fetch_self_id())
 
             try:
                 async for raw_msg in ws:

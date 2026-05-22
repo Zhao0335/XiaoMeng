@@ -1,30 +1,21 @@
 """
-工具 Schema 生成器
+工具 Schema 聚合器
 
-组合硬编码工具（TOOL_SCHEMAS）和动态技能（SkillRegistry）的 schema，
-支持按模型层级和用户权限过滤。
+将内置工具（TOOL_SCHEMAS）与插件工具（PluginManager）合并，
+按模型层级和用户权限过滤后返回给 LLM。
 
-基于 Harness 的 tool schema + registry dispatch 模式。
+来源优先级：
+  1. 内置工具（builtins，在 tools.py 中定义）
+  2. 插件工具（由 PluginManager 管理的 data/plugins/ 中的插件注册）
 """
 
 from typing import Dict, List, Optional
 
 from .definition import ModelTier, UserLevel
-from .registry import SkillRegistry
 
 
 class ToolSchemaBuilder:
-    """构建上下文感知的工具 schema 列表
-
-    工具来源：
-    1. 硬编码工具（web_search, add_memory, etc.）— TOOL_SCHEMAS
-    2. 动态技能（SkillRegistry 中注册了 handler 的技能）
-
-    过滤逻辑：
-    - 本地模型 (LOCAL): 仅提供记忆搜索+对话回调（轻量工具集）
-    - 云端模型 (CLOUD): 提供敏感级以下全部工具
-    - Pro 模型 (PRO): 全部工具
-    """
+    """聚合所有来源的工具 schema。"""
 
     @staticmethod
     def from_tools(
@@ -32,10 +23,18 @@ class ToolSchemaBuilder:
         model_tier: ModelTier,
         user_level: UserLevel,
         identity: str = "",
+        plugin_manager=None,
     ) -> List[Dict]:
-        """从基础工具列表 + SkillRegistry 构建最终工具 schema"""
-        registry = SkillRegistry.get_instance()
+        """
+        构建最终工具列表。
 
-        skill_tools = registry.get_tool_schemas(model_tier, user_level, identity)
+        base_tools    — 内置工具 schema（已按模型层级预过滤）
+        plugin_manager — PluginManager 实例，None 则跳过插件工具
+        """
+        tools = list(base_tools)
 
-        return base_tools + skill_tools
+        if plugin_manager is not None and model_tier >= ModelTier.CLOUD:
+            plugin_schemas = plugin_manager.get_all_tool_schemas(int(user_level))
+            tools.extend(plugin_schemas)
+
+        return tools

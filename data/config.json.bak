@@ -1,0 +1,73 @@
+{
+  "owner": {
+    "user_id": "test_owner",
+    "identities": [
+      {
+        "source": "cli",
+        "channel_user_id": "test_cli_user",
+        "display_name": "测试主人"
+      }
+    ]
+  },
+  "whitelist": {
+    "enabled": true,
+    "pairing_enabled": false,
+    "users": []
+  },
+  "user_groups": {},
+  "llm": {
+    "provider": "ollama",
+    "api_key": "ollama",
+    "base_url": "http://localhost:11434/v1",
+    "model": "qwen2.5:7b",
+    "max_tokens": 4096,
+    "temperature": 0.7
+  },
+  "models": {
+    "enabled": true,
+    "basic_layer": [
+      {
+        "model_id": "qwen-basic",
+        "layer": "basic",
+        "role": "chat",
+        "endpoint": "http://localhost:11434/v1",
+        "model_name": "qwen2.5:7b",
+        "api_key": null,
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "timeout": 60,
+        "enabled": true,
+        "priority": 1
+      }
+    ],
+    "brain_layer": [],
+    "special_layer": []
+  },
+  "memory": {
+    "enabled": true,
+    "storage_type": "hybrid",
+    "short_term_limit": 20,
+    "long_term_enabled": true,
+    "graph_enabled": false,
+    "graphiti_uri": "bolt://localhost:7687",
+    "vector_enabled": false,
+    "chroma_persist_dir": "./data/chroma",
+    "markdown_enabled": true,
+    "markdown_dir": "./data/memory"
+  },
+  "gateway": {
+    "enabled_channels": ["cli", "web"],
+    "http_port": 8080
+  },
+  "session": {
+    "session_timeout": 3600,
+    "max_history_length": 50,
+    "auto_save": true
+  },
+  "version_control": {
+    "enabled": true,
+    "enable_git": true,
+    "require_confirmation": false
+  },
+  "data_dir": "./data"
+}
