@@ -70,9 +70,9 @@ class NapCatClient:
     async def call_api(
         self, action: str, params: Dict[str, Any] = None, timeout: float = None
     ) -> Dict[str, Any]:
+        """调用 OneBot API，等待响应"""
         if timeout is None:
             timeout = self._api_timeout
-        """调用 OneBot API，等待响应"""
         if self._ws is None:
             raise RuntimeError("WebSocket 未连接")
         echo = str(uuid.uuid4())

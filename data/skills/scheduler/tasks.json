@@ -1,15 +1,6 @@
 {
   "tasks": [
     {
-      "id": "remind_locker",
-      "type": "cron",
-      "cron": "06:00",
-      "msg": "⏰ 哥哥~ 该锁柜子啦！别忘了哦！🔒✨",
-      "target": {
-        "user_id": 3797723137
-      }
-    },
-    {
       "id": "dsa_morning_question",
       "type": "instruct",
       "cron": "09:00",

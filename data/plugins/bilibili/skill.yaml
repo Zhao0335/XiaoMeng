@@ -1,0 +1,24 @@
+name: bilibili
+version: 1.0.0
+description: "B站自主浏览、搜索、互动技能（支持账号登录）"
+author: "XiaoMeng Project"
+tags: [video, social, entertainment, bilibili]
+min_user_level: stranger
+min_model_tier: cloud
+risk: read_write
+tools:
+  - bilibili_hot
+  - bilibili_search
+  - bilibili_video_info
+  - bilibili_get_comments
+  - bilibili_post_comment
+  - bilibili_like_video
+  - bilibili_coin_video
+  - bilibili_favorite
+  - bilibili_follow_user
+  - bilibili_get_feed
+  - bilibili_get_zone
+  - bilibili_get_recommend
+dependencies:
+  python:
+    - bilibili-api-python>=17.0.0

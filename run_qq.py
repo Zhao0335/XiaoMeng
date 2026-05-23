@@ -12,15 +12,23 @@ import json
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 # 把 XiaoMeng 根目录加入 sys.path
 sys.path.insert(0, os.path.dirname(__file__))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+_log_dir = Path("data/logs")
+_log_dir.mkdir(parents=True, exist_ok=True)
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_sh = logging.StreamHandler()
+_sh.setFormatter(_fmt)
+_root.addHandler(_sh)
+_fh = RotatingFileHandler(_log_dir / "xiaomeng.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+_fh.setFormatter(_fmt)
+_root.addHandler(_fh)
 logger = logging.getLogger("run_qq")
 
 
@@ -45,6 +53,29 @@ def validate_config(cfg: dict) -> None:
         logger.warning("未配置任何模型，bot 将无法回复消息")
 
 
+async def _run_scheduler(scheduler_path: str) -> None:
+    """后台运行 scheduler daemon，crash 后 5s 自动重启。"""
+    while True:
+        logger.info(f"启动 scheduler: {scheduler_path}")
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, scheduler_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        # 流式转发 scheduler 的输出到 bot 日志
+        async def _drain():
+            async for line in proc.stdout:
+                logger.info(f"[scheduler] {line.decode(errors='replace').rstrip()}")
+        drain_task = asyncio.ensure_future(_drain())
+        await proc.wait()
+        await drain_task
+        if proc.returncode == 0:
+            logger.info("scheduler 正常退出，不再重启")
+            break
+        logger.warning(f"scheduler 意外退出 (code={proc.returncode})，5s 后重启...")
+        await asyncio.sleep(5)
+
+
 async def main(config_path: str) -> None:
     cfg = load_config(config_path)
     validate_config(cfg)
@@ -59,6 +90,15 @@ async def main(config_path: str) -> None:
     logger.info(f"  NapCat:  {cfg.get('napcat_ws_url', 'ws://127.0.0.1:3001')}")
     logger.info(f"  模型数量: {len(cfg.get('models', []))}")
     logger.info("=" * 50)
+
+    # 自动启动 scheduler daemon
+    scheduler_path = Path(__file__).parent / "data/skills/scheduler/main.py"
+    if scheduler_path.exists():
+        asyncio.ensure_future(_run_scheduler(str(scheduler_path)))
+        logger.info("scheduler daemon 已在后台启动")
+    else:
+        logger.warning(f"scheduler 不存在，跳过: {scheduler_path}")
+
     logger.info("正在连接 NapCat...")
 
     try:

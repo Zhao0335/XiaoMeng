@@ -1,0 +1,16 @@
+name: music
+version: 1.0.0
+description: "网易云音乐搜索与欣赏（歌曲/歌手/歌单/歌词）"
+author: "XiaoMeng Project"
+tags: [music, entertainment, netease]
+min_user_level: stranger
+min_model_tier: local
+risk: read_only
+tools:
+  - music_search
+  - music_get_song_detail
+  - music_get_playlist
+  - music_get_artist
+  - music_get_hot_songs
+dependencies:
+  python: []

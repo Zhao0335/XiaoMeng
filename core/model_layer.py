@@ -212,7 +212,12 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
             # thinking 控制：allow_thinking=True 时强制放开（用于图片描述等需要推理的场景）
             force_thinking = kwargs.get("allow_thinking", False)
             if self.endpoint.thinking == "disable" and not force_thinking:
+                # 多种方式同时下发，兼容不同后端：
+                # 1) 顶层 enable_thinking=false（部分自建网关接受）
+                # 2) chat_template_kwargs.enable_thinking=false（vLLM/SGLang 的 Qwen3 标准）
+                # 3) 系统提示注入 /no_think（Qwen3 模板硬触发）
                 payload["enable_thinking"] = False
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
                 if full_messages and full_messages[0]["role"] == "system":
                     if "/no_think" not in full_messages[0]["content"]:
                         full_messages[0]["content"] += "\n/no_think"
@@ -257,7 +262,11 @@ class OpenAICompatibleAdapter(BaseModelAdapter):
             )
             # litellm 等代理会把 thinking 内容放进 reasoning_content，content 留空
             # 此时用 reasoning_content 作为 fallback（_clean_reply 会进一步清理）
-            if not content and reasoning_content:
+            # 但 thinking="disable" 时不 fallback：否则 router 拿到的就是思考过程而非分类结果
+            thinking_disabled = (
+                self.endpoint.thinking == "disable" and not force_thinking
+            )
+            if not content and reasoning_content and not thinking_disabled:
                 content = reasoning_content
 
             # 优先用标准 tool_calls 字段；没有时尝试从 content 解析 DSML 格式

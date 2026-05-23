@@ -348,6 +348,56 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_to",
+            "description": (
+                "主动向指定群或用户发送一条消息（仅限内心世界/主人权限使用）。"
+                "group_id 和 user_id 二选一，不能同时填。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message":  {"type": "string",  "description": "要发送的文字内容"},
+                    "group_id": {"type": "integer", "description": "目标群号（与 user_id 二选一）"},
+                    "user_id":  {"type": "integer", "description": "目标用户 QQ 号（与 group_id 二选一）"},
+                },
+                "required": ["message"],
+            },
+        },
+        "_meta": {"min_user_level": 2, "risk": "SENSITIVE"},
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_reminder",
+            "description": (
+                "设置定时提醒。支持自然语言时间表达，如：\n"
+                "- 一次性：'10分钟后'、'今晚8点'、'明天下午5点'、'后天早上9点'\n"
+                "- 每日重复：'每天早上7点'、'每日晚上10点'\n"
+                "到时间后会私信或在群内提醒。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "time_str": {
+                        "type": "string",
+                        "description": "自然语言时间，如'明天下午5点'、'10分钟后'、'每天早上8点'"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "提醒内容"
+                    },
+                    "remind_in_group": {
+                        "type": "boolean",
+                        "description": "是否在群里提醒（默认 false，发私信）"
+                    }
+                },
+                "required": ["time_str", "message"]
+            }
+        }
+    },
 ]
 
 # 调用工具时展示给用户看的进度消息（None = 不展示）
@@ -365,6 +415,7 @@ TOOL_PROGRESS_MSG = {
     "list_files":           lambda args: None,
     "reload_skills":        lambda args: "（小萌重新加载技能中~）",
     "send_file":            lambda args: f"（小萌发送文件 {args.get('path', '')} ~）",
+    "add_reminder":         lambda args: f"（小萌设置提醒：{args.get('message', '')}~）",
 }
 
 
@@ -484,8 +535,28 @@ class QQToolExecutor:
         elif tool_name == "send_file":
             path = arguments.get("path") or arguments.get("file_path", "")
             return await self._send_file(path, arguments.get("caption", ""))
+        elif tool_name == "send_to":
+            msg = arguments.get("message", "")
+            gid = arguments.get("group_id")
+            uid = arguments.get("user_id")
+            if not msg:
+                return "参数错误：message 不能为空"
+            if gid:
+                await self._napcat.send_group_msg(int(gid), msg)
+                return f"已发送到群 {gid}"
+            elif uid:
+                await self._napcat.send_private_msg(int(uid), msg)
+                return f"已发送到用户 {uid}"
+            else:
+                return "参数错误：group_id 和 user_id 至少填一个"
         elif tool_name == "reload_skills":
             return self._reload_skills()
+        elif tool_name == "add_reminder":
+            return self._add_reminder(
+                arguments.get("time_str", ""),
+                arguments.get("message", ""),
+                bool(arguments.get("remind_in_group", False)),
+            )
         elif self._plugin_manager is not None:
             ctx = {
                 "session_key": self._session_key,
@@ -622,8 +693,8 @@ class QQToolExecutor:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
 
-            # 1. 长期记忆：当前会话 + 用户个人记忆 + 知识库
-            keys = list({self._session_key, self._user_key, "knowledge"})
+            # 1. 长期记忆：当前会话 + 用户个人记忆 + 知识库 + 全局设定
+            keys = list({self._session_key, self._user_key, "knowledge", "global"})
             placeholders = ",".join("?" * len(keys))
             c.execute(
                 f"""SELECT content, session_key, memory_type, importance, created_at
@@ -636,6 +707,8 @@ class QQToolExecutor:
                 ts = (r.get("created_at") or "")[:10]
                 if r["session_key"] == "knowledge":
                     tag = "（知识库）"
+                elif r["session_key"] == "global":
+                    tag = "（全局设定）"
                 elif r["session_key"] == self._user_key and self._user_key != self._session_key:
                     tag = "（关于ta）"
                 else:
@@ -1042,15 +1115,15 @@ class QQToolExecutor:
                     "user_id": self._target_id,
                     "file": file_ref,
                     "name": file_name,
-                })
+                }, timeout=120.0)
             else:
                 resp = await self._napcat.call_api("upload_group_file", {
                     "group_id": self._target_id,
                     "file": file_ref,
                     "name": file_name,
-                })
+                }, timeout=120.0)
             if resp.get("retcode", 0) != 0:
-                return f"发送失败 (retcode={resp['retcode']}): {resp.get('message', '')}"
+                return f"发送失败 (retcode={resp['retcode']}): {resp.get('msg', '')}"
             return f"✅ 文件已发送: {file_name}"
         except ValueError as e:
             return f"路径错误: {e}"
@@ -1100,6 +1173,104 @@ class QQToolExecutor:
             return f"已重新加载 {count} 个技能：{names}"
         except Exception as e:
             return f"重新加载技能失败: {e}"
+
+    # ── add_reminder ─────────────────────────────────
+
+    def _add_reminder(self, time_str: str, message: str, remind_in_group: bool = False) -> str:
+        parsed = self._parse_reminder_time(time_str)
+        if parsed is None:
+            return f"小萌没看懂这个时间表达：「{time_str}」，可以试试「明天下午5点」或「10分钟后」~"
+        task_type, run_at = parsed
+        import uuid, json as _json
+        task_id = f"reminder_{uuid.uuid4().hex[:8]}"
+        if remind_in_group and self._target_id and not self._is_private:
+            target = {"group_id": self._target_id}
+        elif self._sender_qq:
+            target = {"user_id": self._sender_qq}
+        else:
+            return "小萌找不到要提醒谁 o_o"
+        new_task = {
+            "id": task_id,
+            "type": task_type,
+            "msg": f"⏰ 提醒：{message}",
+            "target": target,
+        }
+        if task_type == "once":
+            new_task["run_at"] = run_at
+        else:
+            new_task["cron"] = run_at
+        tasks_file = self._data_dir / "skills" / "scheduler" / "tasks.json"
+        tasks_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if tasks_file.exists():
+                data = _json.loads(tasks_file.read_text(encoding="utf-8"))
+            else:
+                data = {"tasks": []}
+            data.setdefault("tasks", []).append(new_task)
+            tasks_file.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            return f"保存提醒失败: {e}"
+        if task_type == "once":
+            human_time = run_at
+        else:
+            human_time = f"每天 {run_at}"
+        return f"好的！小萌会在 {human_time} 提醒你：{message} ⏰"
+
+    @staticmethod
+    def _parse_reminder_time(text: str):
+        """解析中文自然语言时间，返回 (task_type, run_at_str) 或 None。"""
+        import re
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        text = text.strip()
+
+        # X分钟后
+        m = re.search(r"(\d+)\s*分钟后", text)
+        if m:
+            target = now + timedelta(minutes=int(m.group(1)))
+            return ("once", target.strftime("%Y-%m-%d %H:%M"))
+
+        # X小时后
+        m = re.search(r"(\d+)\s*小时后", text)
+        if m:
+            target = now + timedelta(hours=int(m.group(1)))
+            return ("once", target.strftime("%Y-%m-%d %H:%M"))
+
+        # 每天/每日 + 时间
+        if re.search(r"每[天日]", text):
+            m = re.search(r"(\d+)\s*[点时](?:\s*(\d+)\s*分)?", text)
+            if m:
+                h = int(m.group(1))
+                mi = int(m.group(2)) if m.group(2) else 0
+                if re.search(r"下午|晚上|傍晚", text) and h < 12:
+                    h += 12
+                elif re.search(r"上午|早上|早", text) and h == 12:
+                    h = 0
+                return ("cron", f"{h:02d}:{mi:02d}")
+
+        # 今天/今日/今晚/明天/后天 + 时间
+        day_offset = 0
+        if re.search(r"明天|明日", text):
+            day_offset = 1
+        elif re.search(r"后天|后日", text):
+            day_offset = 2
+
+        m = re.search(r"(\d+)\s*[点时](?:\s*(\d+)\s*分)?", text)
+        if m:
+            h = int(m.group(1))
+            mi = int(m.group(2)) if m.group(2) else 0
+            if re.search(r"下午|晚上|傍晚|夜", text) and h < 12:
+                h += 12
+            elif re.search(r"上午|早上|早晨|早", text) and h == 12:
+                h = 0
+            elif h < 7 and not re.search(r"上午|早", text):
+                h += 12  # 凌晨1-6点不加，其他模糊小时数默认下午
+            target = (now + timedelta(days=day_offset)).replace(hour=h, minute=mi, second=0, microsecond=0)
+            if target <= now and day_offset == 0:
+                target += timedelta(days=1)
+            return ("once", target.strftime("%Y-%m-%d %H:%M"))
+
+        return None
 
 
 # ──────────────────────────────────────────────────────────────

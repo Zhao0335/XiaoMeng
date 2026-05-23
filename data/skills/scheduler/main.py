@@ -15,10 +15,9 @@ import os
 import signal
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
-
-import httpx
 
 # data/ 根目录（main.py 在 data/skills/scheduler/ 下，往上三级）
 DATA_DIR = Path(__file__).parent.parent.parent
@@ -27,9 +26,19 @@ DATA_DIR = Path(__file__).parent.parent.parent
 TASKS_FILE = Path(__file__).parent / "tasks.json"
 PID_FILE = Path(__file__).parent / "scheduler.pid"
 LOG_FILE = Path(__file__).parent / "scheduler.log"
-# Bot 本地 HTTP 中继地址（bot 启动后监听，转发消息给 NapCat）
-BOT_RELAY_API = "http://127.0.0.1:3003"
 POLL_INTERVAL = 5  # 每5秒检查一次任务文件
+
+# NapCat WebSocket 连接参数（从 qq_config.json 读取）
+def _load_napcat_cfg():
+    cfg_file = DATA_DIR / "qq_config.json"
+    try:
+        return json.loads(cfg_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+_napcat_cfg = _load_napcat_cfg()
+NAPCAT_WS_URL = _napcat_cfg.get("napcat_ws_url", "ws://127.0.0.1:3002")
+NAPCAT_TOKEN = _napcat_cfg.get("napcat_token", "")
 
 # ====== 日志 ======
 def log(msg):
@@ -39,25 +48,38 @@ def log(msg):
     print(f"[{ts}] {msg}")
 
 
-# ====== Napcat API 发送消息 ======
+# ====== NapCat WebSocket 发送消息 ======
 async def send_msg(text: str, target):
-    """通过 bot 本地中继发送 QQ 消息（bot 监听 BOT_RELAY_API）"""
+    """直接通过 NapCat WebSocket 发送 QQ 消息"""
+    import websockets
+
     if isinstance(target, str):
         target = {"user_id": int(target)} if target.isdigit() else {}
-    async with httpx.AsyncClient(timeout=10) as client:
-        payload = {"message": text}
-        if "group_id" in target:
-            payload["group_id"] = target["group_id"]
-        elif "user_id" in target:
-            payload["user_id"] = target["user_id"]
-        try:
-            resp = await client.post(f"{BOT_RELAY_API}/send_msg", json=payload)
-            if resp.status_code == 200:
+
+    if "group_id" in target:
+        action = "send_group_msg"
+        params = {"group_id": target["group_id"], "message": text}
+    elif "user_id" in target:
+        action = "send_private_msg"
+        params = {"user_id": target["user_id"], "message": text}
+    else:
+        log(f"❌ 无效目标: {target}")
+        return
+
+    echo = str(uuid.uuid4())[:8]
+    payload = json.dumps({"action": action, "params": params, "echo": echo})
+    headers = {"Authorization": f"Bearer {NAPCAT_TOKEN}"} if NAPCAT_TOKEN else {}
+    try:
+        async with websockets.connect(NAPCAT_WS_URL, additional_headers=headers, open_timeout=5) as ws:
+            await ws.send(payload)
+            resp_raw = await asyncio.wait_for(ws.recv(), timeout=8)
+            resp = json.loads(resp_raw)
+            if resp.get("status") == "ok":
                 log(f"✅ 消息发送成功 -> {target}")
             else:
-                log(f"❌ 消息发送失败 [{resp.status_code}]: {resp.text}")
-        except Exception as e:
-            log(f"❌ 消息发送异常: {e}")
+                log(f"❌ 消息发送失败: {resp}")
+    except Exception as e:
+        log(f"❌ 消息发送异常: {e}")
 
 
 # ====== 任务解析和执行 ======
@@ -99,23 +121,6 @@ def should_run_now(task: dict, last_run: dict) -> bool:
     return True
 
 
-async def send_instruct(prompt: str, target: dict, session_key: str = "", route: str = ""):
-    """通过 bot 本地中继触发小萌执行 AI 指令"""
-    async with httpx.AsyncClient(timeout=15) as client:
-        payload: dict = {"prompt": prompt, "target": target}
-        if session_key:
-            payload["session_key"] = session_key
-        if route:
-            payload["route"] = route
-        try:
-            resp = await client.post(f"{BOT_RELAY_API}/instruct", json=payload)
-            if resp.status_code == 200:
-                log(f"✅ 指令任务已创建 -> {target}")
-            else:
-                log(f"❌ 指令任务创建失败 [{resp.status_code}]: {resp.text}")
-        except Exception as e:
-            log(f"❌ 指令任务异常: {e}")
-
 
 async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
     """检查并执行到时的任务"""
@@ -140,27 +145,47 @@ async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
 
         elif task_type == "once":
             run_at = task.get("run_at", "")
-            target_time = parse_cron(run_at)
-            if target_time:
-                if now.hour == target_time["hour"] and now.minute == target_time["minute"]:
-                    if not task.get("_done", False):
-                        log(f"🔔 执行一次性任务 [{task_id}]: {task.get('msg', '')}")
-                        await send_msg(task.get("msg", "⏰ 小萌提醒时间到！"), task.get("target", {}))
-                        task["_done"] = True
+            if not task.get("_done", False):
+                triggered = False
+                # 支持 "YYYY-MM-DD HH:MM" 精确日期格式
+                try:
+                    from datetime import datetime as _dt
+                    target_dt = _dt.strptime(run_at, "%Y-%m-%d %H:%M")
+                    if (now.year == target_dt.year and now.month == target_dt.month and
+                            now.day == target_dt.day and now.hour == target_dt.hour and
+                            now.minute == target_dt.minute):
+                        triggered = True
+                except ValueError:
+                    # 兼容旧格式 "HH:MM"（每天触发直到标记完成）
+                    target_time = parse_cron(run_at)
+                    if target_time and now.hour == target_time["hour"] and now.minute == target_time["minute"]:
+                        triggered = True
+                if triggered:
+                    log(f"🔔 执行一次性任务 [{task_id}]: {task.get('msg', '')}")
+                    await send_msg(task.get("msg", "⏰ 小萌提醒时间到！"), task.get("target", {}))
+                    task["_done"] = True
+                    # 持久化 _done 标记，防止重载后重复触发
+                    _persist_task_done(TASKS_FILE, task_id)
 
         elif task_type == "instruct":
-            if should_run_now(task, last_run):
-                log(f"🤖 执行 AI 指令任务 [{task_id}]")
-                await send_instruct(
-                    prompt=task.get("prompt", ""),
-                    target=task.get("target", {}),
-                    session_key=task.get("session_key", ""),
-                    route=task.get("route", ""),
-                )
-                last_run[task_id] = f"{now.hour}:{now.minute}"
+            log(f"⚠️ instruct 类型任务 [{task_id}] 已不再支持，请改用 cron 类型")
 
     return last_run
 
+
+def _persist_task_done(tasks_file: Path, task_id: str) -> None:
+    """将 once 任务的 _done 标记写回 tasks.json，防止重启后重复触发。"""
+    try:
+        with open(tasks_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for t in data.get("tasks", []):
+            if t.get("id") == task_id:
+                t["_done"] = True
+                break
+        with open(tasks_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"⚠️ 持久化 _done 失败: {e}")
 
 
 def load_tasks() -> list:
@@ -268,10 +293,28 @@ if __name__ == "__main__":
             status_scheduler()
         sys.exit(0)
 
-    # 检查是否已在运行
-    if read_pid():
-        log("⚠️ Scheduler 已在运行，请先停止")
-        sys.exit(1)
+    # 检查是否已在运行（排除 PID 被新进程复用的情况）
+    old_pid = read_pid()
+    my_pid = os.getpid()
+    if old_pid and old_pid != my_pid:
+        is_running = False
+        try:
+            os.kill(old_pid, 0)
+            cmdline_path = Path(f"/proc/{old_pid}/cmdline")
+            if cmdline_path.exists():
+                cmdline = cmdline_path.read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+                is_running = "scheduler" in cmdline
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        if is_running:
+            log("⚠️ Scheduler 已在运行，请先停止")
+            sys.exit(1)
+        else:
+            log(f"清理过期 PID 文件 (pid={old_pid})")
+            PID_FILE.unlink(missing_ok=True)
+    elif old_pid == my_pid:
+        log(f"清理自身 PID 复用的旧文件 (pid={old_pid})")
+        PID_FILE.unlink(missing_ok=True)
 
     # 注册信号处理
     signal.signal(signal.SIGTERM, handle_signal)

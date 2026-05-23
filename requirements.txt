@@ -37,3 +37,6 @@ requests>=2.31.0
 
 # 搜索工具
 ddgs>=6.0
+
+# B站交互
+bilibili-api-python>=17.0.0
