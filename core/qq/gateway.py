@@ -388,7 +388,32 @@ class QQGateway(MemoryMixin, IdentityMixin, PromptBuilderMixin, TaskRunnerMixin)
 
     # ── 任务进度消息发送（供 TaskPool 回调）──────────────────
 
+    @staticmethod
+    def _clean_markdown(text: str) -> str:
+        """清洗 markdown 语法，使其更适合 QQ 消息显示。"""
+        import re
+        if not text:
+            return text
+        result = text
+        result = re.sub(r'```[\w]*\n.*?```', lambda m: m.group(0).replace('```', '').strip(), result, flags=re.DOTALL)
+        result = re.sub(r'`([^`]+)`', r'\1', result)
+        result = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', result)
+        result = re.sub(r'\*\*([^*]+)\*\*', r'\1', result)
+        result = re.sub(r'\*([^*]+)\*', r'\1', result)
+        result = re.sub(r'__([^_]+)__', r'\1', result)
+        result = re.sub(r'_([^_]+)_', r'\1', result)
+        result = re.sub(r'~~([^~]+)~~', r'\1', result)
+        result = re.sub(r'^#{1,6}\s*', '', result, flags=re.MULTILINE)
+        result = re.sub(r'^>\s*', '', result, flags=re.MULTILINE)
+        result = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', result)
+        result = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'[图片]', result)
+        result = re.sub(r'^[-*+]\s+', '• ', result, flags=re.MULTILINE)
+        result = re.sub(r'^\d+\.\s+', '', result, flags=re.MULTILINE)
+        result = re.sub(r'---+', '─────────', result)
+        return result
+
     async def _send_task_progress(self, task: AsyncTask, text: str) -> None:
+        text = self._clean_markdown(text)
         parts = [p.strip() for p in text.split("\n\n")]
         parts = [p for p in parts if p] or [text]
         for part in parts:

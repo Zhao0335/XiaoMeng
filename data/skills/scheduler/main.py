@@ -40,6 +40,33 @@ _napcat_cfg = _load_napcat_cfg()
 NAPCAT_WS_URL = _napcat_cfg.get("napcat_ws_url", "ws://127.0.0.1:3002")
 NAPCAT_TOKEN = _napcat_cfg.get("napcat_token", "")
 
+def _get_model_for_route(route: str):
+    """根据 route 获取模型配置"""
+    models = _napcat_cfg.get("models", [])
+    route = route.lower()
+    
+    if route == "local":
+        for m in models:
+            if m.get("layer") == "basic" and m.get("role") == "chat":
+                return m
+    elif route == "cloud":
+        for m in models:
+            if m.get("layer") == "brain" and m.get("role") == "reasoning":
+                return m
+    elif route == "pro":
+        for m in models:
+            if m.get("layer") == "pro" and m.get("role") == "reasoning":
+                return m
+    
+    for m in models:
+        if m.get("layer") == "brain" and m.get("role") == "reasoning":
+            return m
+    for m in models:
+        if m.get("layer") == "basic" and m.get("role") == "chat":
+            return m
+    
+    return None
+
 # ====== 日志 ======
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -82,6 +109,84 @@ async def send_msg(text: str, target):
         log(f"❌ 消息发送异常: {e}")
 
 
+async def call_llm(prompt: str, route: str = "cloud", max_tokens: int = 2048, timeout: int = 120) -> str:
+    """调用 LLM 生成内容"""
+    import aiohttp
+    
+    model_cfg = _get_model_for_route(route)
+    if not model_cfg:
+        log(f"❌ 未找到 route={route} 的模型配置")
+        return ""
+    
+    endpoint = model_cfg.get("endpoint", "")
+    model_name = model_cfg.get("model_name", "")
+    api_key = model_cfg.get("api_key", "")
+    proxy = model_cfg.get("proxy", "")
+    
+    if not endpoint or not model_name:
+        log(f"❌ 模型配置不完整: endpoint={endpoint}, model_name={model_name}")
+        return ""
+    
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": model_cfg.get("temperature", 0.7),
+    }
+    
+    try:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        proxy_url = proxy if proxy else None
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.post(
+                f"{endpoint}/chat/completions",
+                json=payload,
+                headers=headers,
+                proxy=proxy_url,
+            ) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    log(f"❌ LLM API 错误: {resp.status} - {text[:200]}")
+                    return ""
+                data = await resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return content.strip()
+    except asyncio.TimeoutError:
+        log(f"❌ LLM 调用超时 ({timeout}s)")
+        return ""
+    except Exception as e:
+        log(f"❌ LLM 调用异常: {e}")
+        return ""
+
+
+def clean_markdown(text: str) -> str:
+    """清洗 markdown 语法"""
+    import re
+    if not text:
+        return text
+    result = text
+    result = re.sub(r'```[\w]*\n.*?```', lambda m: m.group(0).replace('```', '').strip(), result, flags=re.DOTALL)
+    result = re.sub(r'`([^`]+)`', r'\1', result)
+    result = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', result)
+    result = re.sub(r'\*\*([^*]+)\*\*', r'\1', result)
+    result = re.sub(r'\*([^*]+)\*', r'\1', result)
+    result = re.sub(r'__([^_]+)__', r'\1', result)
+    result = re.sub(r'_([^_]+)_', r'\1', result)
+    result = re.sub(r'~~([^~]+)~~', r'\1', result)
+    result = re.sub(r'^#{1,6}\s*', '', result, flags=re.MULTILINE)
+    result = re.sub(r'^>\s*', '', result, flags=re.MULTILINE)
+    result = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', result)
+    result = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'[图片]', result)
+    result = re.sub(r'^[-*+]\s+', '• ', result, flags=re.MULTILINE)
+    result = re.sub(r'^\d+\.\s+', '', result, flags=re.MULTILINE)
+    result = re.sub(r'---+', '─────────', result)
+    return result
+
+
 # ====== 任务解析和执行 ======
 def parse_cron(cron_str: str):
     """解析 cron 表达式 '9:30' -> (hour=9, minute=30)"""
@@ -122,7 +227,7 @@ def should_run_now(task: dict, last_run: dict) -> bool:
 
 
 
-async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
+async def check_and_run_tasks(tasks: list, last_run: dict, warned_tasks: set) -> tuple:
     """检查并执行到时的任务"""
     now = datetime.now()
     for task in tasks:
@@ -168,9 +273,28 @@ async def check_and_run_tasks(tasks: list, last_run: dict) -> dict:
                     _persist_task_done(TASKS_FILE, task_id)
 
         elif task_type == "instruct":
-            log(f"⚠️ instruct 类型任务 [{task_id}] 已不再支持，请改用 cron 类型")
+            if should_run_now(task, last_run):
+                prompt = task.get("prompt", "")
+                route = task.get("route", "cloud")
+                target = task.get("target", {})
+                
+                if not prompt:
+                    log(f"⚠️ instruct 任务 [{task_id}] 缺少 prompt")
+                    continue
+                
+                log(f"🤖 执行 instruct 任务 [{task_id}]: 调用 {route} 模型...")
+                content = await call_llm(prompt, route=route)
+                
+                if content:
+                    content = clean_markdown(content)
+                    parts = [p.strip() for p in content.split("\n\n") if p.strip()]
+                    for part in parts:
+                        await send_msg(part, target)
+                    last_run[task_id] = f"{now.hour}:{now.minute}"
+                else:
+                    log(f"❌ instruct 任务 [{task_id}] LLM 返回空内容")
 
-    return last_run
+    return last_run, warned_tasks
 
 
 def _persist_task_done(tasks_file: Path, task_id: str) -> None:
@@ -216,6 +340,7 @@ async def main_loop():
     log("🚀 小萌定时提醒服务启动")
     
     last_run = {}
+    warned_tasks = set()
     last_mtime = 0
     tasks = []
 
@@ -229,7 +354,7 @@ async def main_loop():
 
         # 执行到时的任务
         if tasks:
-            last_run = await check_and_run_tasks(tasks, last_run)
+            last_run, warned_tasks = await check_and_run_tasks(tasks, last_run, warned_tasks)
 
         await asyncio.sleep(POLL_INTERVAL)
 

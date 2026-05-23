@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>小萌 · 管理面板 ♡</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700&family=Comfortaa:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/admin/static/style.css" />
+</head>
+<body>
+  <!-- 樱花飘落 -->
+  <div class="sakura-layer" aria-hidden="true">
+    <span></span><span></span><span></span><span></span><span></span>
+    <span></span><span></span><span></span><span></span><span></span>
+  </div>
+
+  <!-- 登录视图 -->
+  <section id="view-login" class="view view-login">
+    <div class="login-card">
+      <div class="login-mascot"></div>
+      <h1>小萌管理面板</h1>
+      <p class="subtitle">咳咳…需要主人或管理员的 QQ 验证哦 ♡</p>
+
+      <div id="step-qq" class="login-step">
+        <label>QQ 号</label>
+        <input id="input-qq" type="number" inputmode="numeric" placeholder="例如 12345678" autocomplete="off" />
+        <button id="btn-send-code" class="btn-primary">发送验证码 →</button>
+      </div>
+
+      <div id="step-code" class="login-step hidden">
+        <label>验证码已发到 <span id="sent-qq"></span> 的 QQ 私聊</label>
+        <input id="input-code" type="text" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocomplete="off" />
+        <div class="row">
+          <button id="btn-back" class="btn-secondary">返回</button>
+          <button id="btn-verify" class="btn-primary">验证 ♡</button>
+        </div>
+      </div>
+
+      <p id="login-msg" class="login-msg"></p>
+    </div>
+  </section>
+
+  <!-- 主视图 -->
+  <section id="view-main" class="view view-main hidden">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-emoji">✿</span>
+        <span class="brand-title">小萌管理面板</span>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="qq_config">主配置</button>
+        <button class="tab" data-tab="qq_permissions">权限</button>
+        <button class="tab" data-tab="identity_links">身份映射</button>
+        <button class="tab" data-tab="persona_soul">SOUL.md</button>
+        <button class="tab" data-tab="persona_memory">MEMORY.md</button>
+      </nav>
+      <div class="user-chip">
+        <span id="user-qq">—</span>
+        <span class="user-level" id="user-level">—</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <div class="editor-pane">
+        <div class="editor-header">
+          <h2 id="editor-title">主配置</h2>
+          <div class="editor-actions">
+            <button id="btn-history" class="btn-ghost" title="历史快照">⏱ 历史</button>
+            <button id="btn-reload"  class="btn-ghost" title="重载">↻ 重载</button>
+            <button id="btn-save"    class="btn-primary">保存 ♡</button>
+          </div>
+        </div>
+        <div id="editor-body" class="editor-body">
+          <p class="placeholder">加载中…</p>
+        </div>
+      </div>
+
+      <aside id="history-drawer" class="history-drawer hidden">
+        <div class="drawer-header">
+          <h3>历史快照</h3>
+          <button id="btn-close-history" class="btn-ghost">×</button>
+        </div>
+        <ul id="history-list" class="history-list"></ul>
+        <div id="history-diff" class="history-diff"></div>
+      </aside>
+    </main>
+
+    <p id="status-msg" class="status-msg"></p>
+  </section>
+
+  <!-- 吉祥物（用户把图片丢到 static/images/mascot.png 即可，默认 SVG fallback） -->
+  <div id="mascot" class="mascot">
+    <img src="/admin/static/images/mascot.png" alt="" onerror="this.replaceWith(window.makeMascotFallback())" />
+  </div>
+
+  <script src="/admin/static/app.js"></script>
+</body>
+</html>

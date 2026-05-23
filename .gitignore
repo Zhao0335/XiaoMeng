@@ -143,11 +143,20 @@ data/qq_bot.db-journal
 *.db-journal
 
 # ── 用户隐私数据（真实 QQ 号、权限等）────────────
+data/qq_permissions.json
+data/identity_links.json
+# 旧版（已合并到 qq_permissions.json）兼容保留：
 data/qq_admins.json
 data/qq_blacklist.json
-data/users.json
 data/whitelist.json
-data/identity_links.json
+data/users.json
+data/*.json.bak
+
+# ── Web 管理面板配置快照（含 api_key 等历史版本）──
+data/.config_history/
+
+# ── 用户上传的吉祥物图片（个人化资源） ────────────
+web/static/images/mascot.*
 
 # ── 用户记忆文件（含真实对话内容）────────────────
 data/memory/

@@ -87,6 +87,8 @@
 
 身份等级基于 identity（非 QQ 号），同一人的多账号共享权限。
 
+**存储**：admin / blacklist / whitelist 统一存在 `data/qq_permissions.json`（旧版本拆成 3 个文件 `qq_admins.json` / `qq_blacklist.json` / `whitelist.json`，启动时会自动迁移合并）。
+
 ### QQ 管理命令
 
 | 命令 | 权限 |
@@ -321,6 +323,24 @@ uvicorn run_live2d:app --host 0.0.0.0 --port 8765
 
 ---
 
+## HTML 配置管理面板（二次元风格）
+
+寄宿在 `run_live2d.py` 同进程，**不另起服务**。启动 Live2D 后端后，浏览器访问：
+
+```
+http://127.0.0.1:8765/admin
+```
+
+- **登录**：和 Live2D 一样的 QQ 验证码流程，但额外要求 ADMIN 及以上权限
+- **能改的配置**：`qq_config.json`、`qq_permissions.json`、`identity_links.json`、`persona/SOUL.md`、`persona/MEMORY.md`
+- **历史快照**：每次保存自动写一份到 `data/.config_history/`，每文件保留 20 份，UI 上可 diff 预览 + 一键恢复
+- **敏感字段保护**：`api_key` / `token` 默认显示 `••••••••`，点眼睛图标临时显示
+- **吉祥物**：把图片命名 `mascot.png`（也支持 `.jpg/.gif/.webp`）放到 `web/static/images/`，右下角会出现你的 XiaoMeng 头像
+
+完整说明：[`web/README.md`](web/README.md)。
+
+---
+
 ## 项目结构
 
 ```
@@ -370,13 +390,19 @@ XiaoMeng/
 │   ├── app.py
 │   └── ...
 │
+├── web/                   # HTML 配置管理面板（二次元风格，可选）
+│   ├── routes.py          # 路由：/admin, /admin/ws, /admin/static/*
+│   ├── auth.py            # QQ 验证码 + ADMIN 权限门
+│   ├── config_io.py       # 读写 + 历史快照 + 敏感字段 mask
+│   └── static/            # index.html / style.css / app.js / images/
+│
 └── data/                  # 运行时数据（volume 挂载，代码不包含）
     ├── qq_config.json      # 配置（含 API Key，不上传）
     ├── qq_config.example.json
     ├── qq_bot.db           # SQLite（消息历史、长期记忆）
-    ├── qq_admins.json      # 管理员列表
-    ├── qq_blacklist.json   # 黑名单
+    ├── qq_permissions.json # 管理员/黑名单/白名单（合并文件）
     ├── identity_links.json # QQ 号 → identity 映射
+    ├── .config_history/    # web 管理面板的版本快照（自动生成）
     ├── routing_hints.md    # 手动路由规则（自然语言）
     ├── persona/
     │   ├── SOUL.md         # Bot 人格定义（灵魂文件）

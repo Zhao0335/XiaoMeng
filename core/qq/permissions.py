@@ -4,9 +4,9 @@ QQ 权限系统
 
 设计原则：
 - Owner QQ 号写死在配置文件，不存数据库，不可被修改
-- Admin / Blacklist 存在 data/qq_blacklist.json 和 data/whitelist.json
-- 复用现有 UserManager 的白名单基础设施
+- Admin / Blacklist / Whitelist 统一存在 data/qq_permissions.json
 - Blacklist 优先级最高：黑名单用户的所有消息被无视
+- 启动时检测旧的 qq_admins.json / qq_blacklist.json / whitelist.json 自动迁移
 """
 
 import json
@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from enum import IntEnum
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +38,29 @@ class QQPermissionManager:
     """
     管理 QQ 用户的权限级别。
 
-    存储：
-    - data/qq_admins.json     : {qq: {"nickname": ..., "added_at": ..., "added_by": ...}}
-    - data/qq_blacklist.json  : {qq: {"nickname": ..., "added_at": ..., "added_by": ...}}
+    存储：data/qq_permissions.json
+        {
+          "admins":    {qq: {"nickname": ..., "added_at": ..., "added_by": ...}},
+          "blacklist": {qq: {"nickname": ..., "added_at": ..., "added_by": ...}},
+          "whitelist": {qq: {"nickname": ..., "added_at": ..., "added_by": ...}}
+        }
     """
+
+    _FILE_NAME = "qq_permissions.json"
+    _LEGACY_FILES = {
+        "admins":    "qq_admins.json",
+        "blacklist": "qq_blacklist.json",
+        "whitelist": "whitelist.json",
+    }
 
     def __init__(self, data_dir: str, owner_qq: int):
         self._data_dir = Path(data_dir)
         self._owner_qq = owner_qq
         self._admins: Dict[int, dict] = {}
         self._blacklist: Dict[int, dict] = {}
+        self._whitelist: Dict[int, dict] = {}
         self._data_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_if_needed()
         self._load()
 
     # ──────────────────────────────────────────────
@@ -86,20 +98,18 @@ class QQPermissionManager:
     def grant_admin(self, target_qq: int, by_qq: int, nickname: str = "") -> bool:
         """授予管理员权限，返回是否是新授权"""
         if target_qq == self._owner_qq:
-            return False  # 主人不需要授权
+            return False
         already = target_qq in self._admins
         self._admins[target_qq] = {
             "nickname": nickname,
             "added_at": datetime.now().isoformat(),
             "added_by": by_qq,
         }
-        # 若在黑名单则先移除
         self._blacklist.pop(target_qq, None)
         self._save()
         return not already
 
     def revoke_admin(self, target_qq: int, by_qq: int) -> bool:
-        """撤销管理员权限，返回是否存在"""
         if target_qq not in self._admins:
             return False
         del self._admins[target_qq]
@@ -107,7 +117,6 @@ class QQPermissionManager:
         return True
 
     def add_blacklist(self, target_qq: int, by_qq: int, nickname: str = "") -> bool:
-        """加入黑名单"""
         if target_qq == self._owner_qq:
             return False
         self._blacklist[target_qq] = {
@@ -120,7 +129,6 @@ class QQPermissionManager:
         return True
 
     def remove_blacklist(self, target_qq: int, by_qq: int) -> bool:
-        """移出黑名单"""
         if target_qq not in self._blacklist:
             return False
         del self._blacklist[target_qq]
@@ -131,37 +139,60 @@ class QQPermissionManager:
     # 持久化
     # ──────────────────────────────────────────────
 
-    def _load(self) -> None:
-        admins_file = self._data_dir / "qq_admins.json"
-        blacklist_file = self._data_dir / "qq_blacklist.json"
-
-        if admins_file.exists():
+    def _migrate_legacy_if_needed(self) -> None:
+        """启动时检测旧的 3 个文件，若新文件不存在则合并迁移并把旧文件重命名为 .bak"""
+        new_file = self._data_dir / self._FILE_NAME
+        if new_file.exists():
+            return
+        legacy_present = {
+            k: self._data_dir / fn
+            for k, fn in self._LEGACY_FILES.items()
+            if (self._data_dir / fn).exists()
+        }
+        if not legacy_present:
+            return
+        merged = {"admins": {}, "blacklist": {}, "whitelist": {}}
+        for k, path in legacy_present.items():
             try:
-                raw = json.loads(admins_file.read_text(encoding="utf-8"))
-                self._admins = {int(k): v for k, v in raw.items()}
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    merged[k] = raw
             except Exception as e:
-                logger.warning(f"加载 qq_admins.json 失败: {e}")
-
-        if blacklist_file.exists():
-            try:
-                raw = json.loads(blacklist_file.read_text(encoding="utf-8"))
-                self._blacklist = {int(k): v for k, v in raw.items()}
-            except Exception as e:
-                logger.warning(f"加载 qq_blacklist.json 失败: {e}")
-
-    def _save(self) -> None:
-        admins_file = self._data_dir / "qq_admins.json"
-        blacklist_file = self._data_dir / "qq_blacklist.json"
+                logger.warning(f"迁移 {path.name} 失败: {e}")
         try:
-            admins_file.write_text(
-                json.dumps({str(k): v for k, v in self._admins.items()},
-                           ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            new_file.write_text(
+                json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            blacklist_file.write_text(
-                json.dumps({str(k): v for k, v in self._blacklist.items()},
-                           ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            for k, path in legacy_present.items():
+                path.rename(path.with_suffix(path.suffix + ".bak"))
+            logger.info(
+                f"qq_permissions.json 迁移成功（合并 {list(legacy_present)}，旧文件已 .bak）"
             )
         except Exception as e:
-            logger.error(f"保存权限数据失败: {e}")
+            logger.error(f"qq_permissions.json 迁移失败: {e}")
+
+    def _load(self) -> None:
+        path = self._data_dir / self._FILE_NAME
+        if not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self._admins    = {int(k): v for k, v in raw.get("admins", {}).items()}
+            self._blacklist = {int(k): v for k, v in raw.get("blacklist", {}).items()}
+            self._whitelist = {int(k): v for k, v in raw.get("whitelist", {}).items()}
+        except Exception as e:
+            logger.warning(f"加载 qq_permissions.json 失败: {e}")
+
+    def _save(self) -> None:
+        path = self._data_dir / self._FILE_NAME
+        payload = {
+            "admins":    {str(k): v for k, v in self._admins.items()},
+            "blacklist": {str(k): v for k, v in self._blacklist.items()},
+            "whitelist": {str(k): v for k, v in self._whitelist.items()},
+        }
+        try:
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.error(f"保存 qq_permissions.json 失败: {e}")

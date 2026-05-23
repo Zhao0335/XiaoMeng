@@ -421,6 +421,14 @@ async def _ws_endpoint(websocket: WebSocket):
             with contextlib.suppress(BaseException):
                 await current_task
 
+# ── HTML 管理面板（必须先挂载，避免被根 SPA 遮住） ───────────────────
+try:
+    from web import register_admin_routes
+    register_admin_routes(app, _napcat, _perm_mgr, _data_dir)
+    logger.info("HTML 管理面板已挂载: /admin")
+except Exception as e:
+    logger.warning(f"挂载 HTML 管理面板失败: {e}")
+
 # 前端静态文件（挂在最后，不遮住 API 路由）
 if _FRONTEND.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND), html=True), name="frontend")
